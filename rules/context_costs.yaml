@@ -1,0 +1,49 @@
+# Context cost estimation rules for Claude Code plugin components
+# Values in estimated tokens
+
+component_costs:
+  # Commands: description loaded, body on-demand
+  command:
+    base: 50
+    per_line: 2
+    description_only: true
+    notes: "Only description in context until invoked"
+
+  # Agents: description always loaded, body on invocation
+  agent:
+    base: 100
+    per_line: 3
+    description_only: true
+    notes: "Agent descriptions visible in tool list"
+
+  # Skills: minimal footprint until triggered
+  skill:
+    base: 20
+    per_line: 1
+    description_only: true
+    notes: "Most efficient - only name+description until activated"
+
+  # MCP Servers: ALL tool definitions always in context
+  mcp_server:
+    base: 500
+    per_tool: 100
+    always_loaded: true
+    notes: "High cost - all tools visible at all times"
+
+  # Hooks: execute outside context, no token cost
+  hook:
+    base: 0
+    notes: "No context cost - runs as shell command"
+
+  # LSP Servers: no direct context cost
+  lsp_server:
+    base: 0
+    notes: "Provides code intelligence, no context overhead"
+
+# Efficiency ratings based on baseline overhead
+efficiency_thresholds:
+  excellent: 500      # < 500 tokens baseline
+  good: 1500          # < 1500 tokens baseline
+  moderate: 3000      # < 3000 tokens baseline
+  heavy: 5000         # < 5000 tokens baseline
+  excessive: 999999   # >= 5000 tokens baseline

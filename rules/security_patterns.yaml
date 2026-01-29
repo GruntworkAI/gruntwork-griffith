@@ -1,0 +1,53 @@
+# Security patterns to scan for in Claude Code plugins
+# Severity: critical, high, medium, low, info
+
+patterns:
+  critical:
+    - pattern: "curl.*\\|.*sh"
+      context: "**/*.sh"
+      message: "Pipe to shell - potential remote code execution"
+
+    - pattern: "eval\\(|exec\\("
+      context: "**/*.py"
+      message: "Dynamic code execution detected"
+
+  high:
+    - pattern: "os\\.system|subprocess\\.call|subprocess\\.run"
+      context: "hooks/**/*.py"
+      message: "Shell execution in hooks - review for injection risks"
+
+    - pattern: "\\$\\{?[A-Z_]+\\}?.*\\|"
+      context: "**/*.sh"
+      message: "Environment variable piped to command - injection risk"
+
+  medium:
+    - pattern: "chmod.*777"
+      context: "**/*.sh"
+      message: "Overly permissive file permissions"
+
+    - pattern: "ANTHROPIC_API_KEY|API_KEY|SECRET|PASSWORD"
+      context: "**/*"
+      exclude: "*.md"
+      message: "Potential credential exposure"
+
+    - pattern: "\\.\\./\\.\\."
+      context: "**/*"
+      message: "Path traversal pattern detected"
+
+  low:
+    - pattern: "/tmp/"
+      context: "**/*.sh"
+      message: "Uses shared /tmp directory - consider user-specific paths"
+
+  info:
+    - pattern: "WebFetch\\("
+      context: "skills/**/*.md"
+      message: "Skill requests web access"
+
+    - pattern: "Bash\\("
+      context: "skills/**/*.md"
+      message: "Skill executes shell commands"
+
+    - pattern: "gh |hub "
+      context: "**/*.sh"
+      message: "Requires GitHub CLI"
