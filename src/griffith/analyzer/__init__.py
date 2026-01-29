@@ -1,8 +1,8 @@
 """Plugin analysis modules"""
 
 from .inventory import PluginInventory
-from .tokenizer import TokenEstimator
+from .footprint import FootprintEstimator
 from .security import SecurityScanner
 from .architecture import ArchitectureAssessor
 
-__all__ = ["PluginInventory", "TokenEstimator", "SecurityScanner", "ArchitectureAssessor"]
+__all__ = ["PluginInventory", "FootprintEstimator", "SecurityScanner", "ArchitectureAssessor"]
