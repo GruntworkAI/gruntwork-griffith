@@ -1,5 +1,7 @@
 # Griffith - Claude Code Plugin Observatory
 
+## Archetype: Usable
+
 ## Overview
 
 Griffith is a plugin evaluation and analytics system for the Claude Code ecosystem. Named after the Griffith Observatory in Los Angeles, it provides visibility into plugin quality, usage, and security.
