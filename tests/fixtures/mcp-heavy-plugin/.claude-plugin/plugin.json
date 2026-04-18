@@ -1,0 +1,5 @@
+{
+  "name": "mcp-heavy",
+  "version": "0.0.1",
+  "description": "Fixture with 2 MCP servers and 10 tools for footprint tests."
+}
