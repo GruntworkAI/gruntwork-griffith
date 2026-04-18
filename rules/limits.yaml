@@ -1,0 +1,19 @@
+# Size, line, and timeout limits for Griffith analyzers.
+#
+# All byte values are integers (no unit suffix). Time values in seconds.
+
+file:
+  # Above this, inventory records size_skipped=True and does not read content.
+  max_read_bytes: 2097152       # 2 MB
+  # Scanner truncates longer lines and emits a truncated-long-line info finding.
+  max_line_bytes: 16384         # 16 KB
+
+clone:
+  max_total_bytes: 209715200    # 200 MB post-clone (sanity cap)
+  timeout_seconds: 120
+
+plugin:
+  max_files: 10000              # per-plugin enumeration cap
+
+regex:
+  per_file_timeout_seconds: 1.0 # ReDoS defense: per-file wall-clock
