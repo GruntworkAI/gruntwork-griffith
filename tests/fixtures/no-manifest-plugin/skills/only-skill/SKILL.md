@@ -1,0 +1,1 @@
+# Skill without a manifest
