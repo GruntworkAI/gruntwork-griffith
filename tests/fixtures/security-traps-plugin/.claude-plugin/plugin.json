@@ -1,0 +1,5 @@
+{
+  "name": "security-traps",
+  "version": "0.0.1",
+  "description": "Fixture containing known security violations at every severity level."
+}

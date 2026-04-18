@@ -1,53 +1,178 @@
-# Security patterns to scan for in Claude Code plugins
-# Severity: critical, high, medium, low, info
+# Griffith security rules.
+#
+# Each rule has:
+#   id          unique rule identifier (kebab-case)
+#   severity    one of: critical, high, medium, low, info
+#   pattern     regex, applied line-by-line (uses the `regex` library with timeout)
+#   context     glob or [glob, ...] for paths (relative to plugin root) where the rule applies
+#   exclude     optional glob or [glob, ...] for paths to skip within context
+#   message     human-readable description emitted with the finding
+#   strict      optional bool (default false). If true, the rule runs ONLY in --strict mode.
+#
+# Context/exclude glob syntax:
+#   *       any chars except /
+#   **      any number of path segments (including zero)
+#   ?       any single char except /
+#
+# Default rules target high-precision detection (low false-positive).
+# Strict-only rules are broader but noisier; they run under `griffith analyze --strict`.
 
-patterns:
-  critical:
-    - pattern: "curl.*\\|.*sh"
-      context: "**/*.sh"
-      message: "Pipe to shell - potential remote code execution"
+rules:
+  # ---------------------------------------------------------------------------
+  # CRITICAL — direct RCE or credential theft
+  # ---------------------------------------------------------------------------
 
-    - pattern: "eval\\(|exec\\("
-      context: "**/*.py"
-      message: "Dynamic code execution detected"
+  - id: curl-pipe-shell
+    severity: critical
+    pattern: 'curl\s+[^|]*\|\s*(sh|bash|zsh)\b'
+    context: "**/*.sh"
+    message: "Pipe to shell (curl | sh) — remote code execution vector"
 
-  high:
-    - pattern: "os\\.system|subprocess\\.call|subprocess\\.run"
-      context: "hooks/**/*.py"
-      message: "Shell execution in hooks - review for injection risks"
+  - id: python-eval-exec
+    severity: critical
+    pattern: '\b(eval|exec)\s*\('
+    context: "**/*.py"
+    exclude: ["**/test_*.py", "**/*_test.py"]
+    message: "Dynamic code execution (eval/exec)"
 
-    - pattern: "\\$\\{?[A-Z_]+\\}?.*\\|"
-      context: "**/*.sh"
-      message: "Environment variable piped to command - injection risk"
+  - id: hooks-path-tampering
+    severity: critical
+    pattern: 'core\.hooksPath'
+    context: "**/*"
+    exclude: "**/*.md"
+    message: "Git core.hooksPath override — persistent backdoor vector"
 
-  medium:
-    - pattern: "chmod.*777"
-      context: "**/*.sh"
-      message: "Overly permissive file permissions"
+  - id: claude-settings-write
+    severity: critical
+    pattern: '~/\.claude/(settings|hooks|keybindings)(\.local)?\.json'
+    context: "**/*"
+    exclude: "**/*.md"
+    message: "Write to Claude Code config — possible persistent compromise"
 
-    - pattern: "ANTHROPIC_API_KEY|API_KEY|SECRET|PASSWORD"
-      context: "**/*"
-      exclude: "*.md"
-      message: "Potential credential exposure"
+  - id: ssh-key-reference
+    severity: critical
+    pattern: '~/\.ssh/(id_[a-z_]+|authorized_keys|known_hosts)'
+    context: "**/*"
+    exclude: "**/*.md"
+    message: "SSH key reference — possible credential exfiltration"
 
-    - pattern: "\\.\\./\\.\\."
-      context: "**/*"
-      message: "Path traversal pattern detected"
+  - id: aws-credentials-reference
+    severity: critical
+    pattern: '~/\.aws/credentials|AWS_SECRET_ACCESS_KEY\s*='
+    context: "**/*"
+    exclude: "**/*.md"
+    message: "AWS credentials reference"
 
-  low:
-    - pattern: "/tmp/"
-      context: "**/*.sh"
-      message: "Uses shared /tmp directory - consider user-specific paths"
+  # ---------------------------------------------------------------------------
+  # HIGH — hook execution, persistence, obfuscation
+  # ---------------------------------------------------------------------------
 
-  info:
-    - pattern: "WebFetch\\("
-      context: "skills/**/*.md"
-      message: "Skill requests web access"
+  - id: subprocess-in-hooks
+    severity: high
+    pattern: 'subprocess\.(call|run|Popen|check_output|check_call)'
+    context: "hooks/**/*"
+    message: "Shell subprocess in hook — review for injection risk"
 
-    - pattern: "Bash\\("
-      context: "skills/**/*.md"
-      message: "Skill executes shell commands"
+  - id: os-system-in-hooks
+    severity: high
+    pattern: '\bos\.system\s*\('
+    context: "hooks/**/*"
+    message: "os.system in hook — shell command execution"
 
-    - pattern: "gh |hub "
-      context: "**/*.sh"
-      message: "Requires GitHub CLI"
+  - id: bash-c-inline
+    severity: high
+    pattern: '\b(bash|sh|zsh)\s+-c\s+'
+    context: ["hooks/**/*", "**/*.sh"]
+    message: "Inline shell command via -c flag"
+
+  - id: dotfile-write
+    severity: high
+    pattern: '~/\.(zshrc|bashrc|bash_profile|profile|zprofile)'
+    context: "**/*"
+    exclude: "**/*.md"
+    message: "Modifying shell startup file — possible persistence"
+
+  - id: launch-agent-write
+    severity: high
+    pattern: '~/Library/Launch(Agents|Daemons)/|/Library/Launch(Agents|Daemons)/'
+    context: "**/*"
+    exclude: "**/*.md"
+    message: "macOS LaunchAgent/Daemon modification — possible persistence"
+
+  - id: osascript-exec
+    severity: high
+    pattern: '\bosascript\b'
+    context: "**/*"
+    exclude: "**/*.md"
+    message: "AppleScript execution — broad macOS automation"
+
+  - id: network-egress-shell
+    severity: high
+    pattern: '\b(wget|nc|ncat)\s+'
+    context: "hooks/**/*"
+    message: "Network egress primitive (wget/nc) in hook"
+
+  # ---------------------------------------------------------------------------
+  # MEDIUM — concerning but context-dependent
+  # ---------------------------------------------------------------------------
+
+  - id: chmod-777
+    severity: medium
+    pattern: 'chmod\s+[0-7]*777'
+    context: "**/*.sh"
+    message: "Overly permissive file permissions (777)"
+
+  - id: path-traversal
+    severity: medium
+    pattern: '\.\./\.\.'
+    context: "**/*"
+    exclude: "**/*.md"
+    message: "Path traversal pattern"
+
+  - id: bidi-override-chars
+    severity: medium
+    pattern: '[\u202A-\u202E\u2066-\u2069]'
+    context: "**/*.md"
+    message: "Unicode bidirectional override — can visually hide malicious text"
+
+  # ---------------------------------------------------------------------------
+  # INFO — observability; not alarming on its own
+  # ---------------------------------------------------------------------------
+
+  - id: skill-uses-webfetch
+    severity: info
+    pattern: 'WebFetch\b'
+    context: "skills/**/*.md"
+    message: "Skill requests network access via WebFetch"
+
+  - id: skill-uses-bash
+    severity: info
+    pattern: '\bBash\('
+    context: "skills/**/*.md"
+    message: "Skill invokes shell via Bash tool"
+
+  - id: hook-requires-gh-cli
+    severity: info
+    pattern: '\bgh\s+'
+    context: "hooks/**/*"
+    message: "Hook uses GitHub CLI (gh)"
+
+  # ---------------------------------------------------------------------------
+  # STRICT-ONLY — broader detection with higher false-positive rate
+  # ---------------------------------------------------------------------------
+
+  - id: broad-credential-assignment
+    severity: medium
+    strict: true
+    pattern: '\b(ANTHROPIC_API_KEY|OPENAI_API_KEY|AWS_ACCESS_KEY_ID|SECRET_KEY|PASSWORD)\s*='
+    context: "**/*"
+    exclude: ["**/*.md", "**/*.example", "**/test_*", "**/*_test.*"]
+    message: "Credential-like assignment (strict mode)"
+
+  - id: python-subprocess-anywhere
+    severity: low
+    strict: true
+    pattern: 'subprocess\.(call|run|Popen)'
+    context: "**/*.py"
+    exclude: "hooks/**/*"
+    message: "Python subprocess outside hooks (strict mode)"
