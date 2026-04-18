@@ -1,0 +1,7 @@
+{
+  "name": "minimal-marketplace",
+  "plugins": [
+    {"name": "plugin-alpha", "source": "./plugins/plugin-alpha"},
+    {"name": "plugin-beta", "source": "./plugins/plugin-beta"}
+  ]
+}
