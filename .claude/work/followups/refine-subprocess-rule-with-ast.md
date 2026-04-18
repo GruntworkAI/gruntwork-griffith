@@ -35,17 +35,48 @@ AST analysis can:
 1. Detect `shell=True` as a separate, higher-severity finding
 2. Detect missing `timeout=` as a medium finding
 3. Detect string concatenation / f-strings in the command argument (taint proxy)
-4. Downgrade the "bare subprocess in hook" finding from `high` to `info` when
-   the other checks pass
 
-## Suggested rule split
+## Do NOT collapse the capability signal — additive only
 
-| Rule ID | Severity | Detects |
-|---------|----------|---------|
-| `subprocess-shell-true` | critical | `subprocess.*` with `shell=True` anywhere |
-| `subprocess-no-timeout` | medium | `subprocess.*` without `timeout=` kwarg |
-| `subprocess-dynamic-command` | high | first arg contains f-string, `.format()`, or `+` concat |
-| `subprocess-in-hooks` | info | capability signal, after the stricter rules pass |
+The naive refactor — "downgrade subprocess-in-hooks to info when shell=False
++ timeout set + list args" — creates a real security hole. Static analysis
+cannot tell that an argument is attacker-controlled. Example:
+
+```python
+subprocess.run(["git", "clone", attacker_controlled_url], timeout=30)
+# Passes all the "safe" checks.
+# But if attacker_controlled_url is "--upload-pack=/tmp/evil.sh", git's
+# argument parsing executes /tmp/evil.sh. This is argument injection,
+# not shell injection. No static rule can catch this without semantic
+# knowledge of git's CLI.
+```
+
+Similar classes: `cat ["shell", path]` where path is `/etc/shadow`;
+`python ["subprocess", "run", ["python", path]]` where path is attacker-chosen.
+
+**Design rule: new stricter detections are ADDITIVE to the capability signal.**
+- `subprocess-in-hooks` (INFO) — always fires; capability signal, unchanged
+- `subprocess-shell-true` (CRITICAL) — adds when shell=True detected
+- `subprocess-dynamic-command` (HIGH) — adds when first arg has f-string/concat
+- `subprocess-no-timeout` (MEDIUM) — adds when timeout= kwarg missing
+
+User always sees "this plugin uses subprocess." They additionally see stricter
+findings where the pattern is more dangerous. Nothing gets silenced.
+
+## Suggested rule split (all additive)
+
+| Rule ID | Severity | Detects | Replaces |
+|---------|----------|---------|----------|
+| `subprocess-in-hooks` | info | any `subprocess.*` call in hooks/ | current `high` severity |
+| `subprocess-shell-true` | critical | `shell=True` kwarg | new |
+| `subprocess-dynamic-command` | high | first arg contains f-string / `.format()` / `+` concat | new |
+| `subprocess-no-timeout` | medium | `timeout=` kwarg missing | new |
+
+The only change to the existing rule is the severity downgrade from `high` to
+`info`. This reflects that "subprocess is used" is a capability fact, not a
+defect. Plugins that shell out for legitimate reasons (git, gh, python) get
+one `info` finding per call site. Dangerous patterns get additional, stricter
+findings stacked on top.
 
 ## Implementation approach
 
