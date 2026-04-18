@@ -15,7 +15,7 @@ griffith = "griffith.cli:main"
 python = "^3.11"
 click = "^8.1"
 rich = "^13.0"
-tiktoken = "^0.5"
+tiktoken = ">=0.8"
 pyyaml = "^6.0"
 requests = "^2.31"
 
@@ -41,3 +41,10 @@ select = ["E", "F", "I", "N", "W"]
 [tool.mypy]
 python_version = "3.11"
 strict = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = [
+    "network: tests that require network access (e.g., real git clone). Skip with -m 'not network'",
+    "adversarial: tests exercising defensive behavior against malicious inputs",
+]
