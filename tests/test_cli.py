@@ -105,3 +105,51 @@ class TestStubCommands:
         result = runner.invoke(main, ["scan-installed"])
         assert result.exit_code != 0
         assert "not yet implemented" in result.stderr.lower()
+
+
+# ============================================================================
+# Phase 1.5 Unit 5: Dependencies section E2E
+# ============================================================================
+
+
+class TestDependenciesCliE2E:
+    def test_cli_json_contains_deps_section(self, runner, fixtures_dir):
+        result = runner.invoke(
+            main, ["analyze", str(fixtures_dir / "deps-python-plugin"), "--json"]
+        )
+        assert result.exit_code == 0, result.stderr
+        parsed = json.loads(result.stdout)
+        assert "dependencies" in parsed
+        assert parsed["dependencies"]["package_count"] == 9
+        names = {p["name"] for p in parsed["dependencies"]["packages"]}
+        assert "fastapi" in names
+        assert "requests" in names
+
+    def test_cli_rich_shows_dependencies_section(self, runner, fixtures_dir):
+        result = runner.invoke(
+            main, ["analyze", str(fixtures_dir / "deps-python-plugin")]
+        )
+        assert result.exit_code == 0, result.stderr
+        assert "Dependencies" in result.stdout
+
+    def test_cli_json_minimal_plugin_has_empty_deps(self, runner, minimal_plugin):
+        result = runner.invoke(main, ["analyze", str(minimal_plugin), "--json"])
+        assert result.exit_code == 0
+        parsed = json.loads(result.stdout)
+        deps = parsed["dependencies"]
+        assert deps["scan_status"] == "tier1_only"
+        assert deps["packages"] == []
+        assert deps["manifests"] == []
+        assert deps["sca"] is None
+
+    def test_cli_scan_status_and_ecosystems_in_marketplace_reports(
+        self, runner, fixtures_dir
+    ):
+        """Each plugin in a marketplace scan gets its own dependencies section."""
+        mp = str(fixtures_dir / "minimal-marketplace")
+        result = runner.invoke(main, ["analyze", mp, "--json"])
+        assert result.exit_code == 0, result.stderr
+        parsed = json.loads(result.stdout)
+        for r in parsed["reports"]:
+            assert "dependencies" in r
+            assert r["dependencies"]["scan_status"] == "tier1_only"

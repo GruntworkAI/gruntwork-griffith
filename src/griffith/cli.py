@@ -10,6 +10,7 @@ from rich.console import Console
 
 from griffith.analyzer import (
     ArchitectureAssessor,
+    DependencyAnalyzer,
     FootprintEstimator,
     PluginInventory,
     SecurityScanner,
@@ -117,11 +118,13 @@ def _analyze_single(
     sec_findings = SecurityScanner(strict=strict).scan(inv)
     footprint = FootprintEstimator().estimate(inv)
     architecture = ArchitectureAssessor().assess(inv)
+    dependency_report = DependencyAnalyzer().analyze(plugin_path, sca=False)
     return build_report(
         inventory=inv,
         security_findings=sec_findings,
         footprint=footprint,
         architecture=architecture,
+        dependency_report=dependency_report,
         source=source,
         source_type=source_type,
         plugin_path_override=plugin_path_override,
