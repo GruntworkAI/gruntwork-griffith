@@ -22,9 +22,17 @@ from __future__ import annotations
 
 import os
 import re
+import sys
+import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Literal, Optional
+
+from griffith.sanitize import (
+    DEFAULT_MAX_DESCRIPTION_LENGTH,
+    DEFAULT_MAX_NAME_LENGTH,
+    sanitize_string,
+)
 
 # Per-file read cap inherited from Inventory's MAX_READ_BYTES convention.
 MAX_READ_BYTES = 2 * 1024 * 1024  # 2 MB
@@ -53,6 +61,16 @@ _EXACT_MANIFEST_NAMES: set[str] = {
 
 # requirements.txt, requirements-dev.txt, requirements_test.txt, etc.
 _REQUIREMENTS_TXT_RE = re.compile(r"^requirements[\w.\-]*\.txt$")
+
+# Anchored bounded regex for package specs (PEP 508-ish).
+# - Group 1: package name (ASCII letters/digits/._-); 1-200 chars
+# - Group 2: optional extras block like [extra1,extra2] (up to 100 chars)
+# - Group 3: rest of line (constraint like >=1.0,<2.0 or env marker)
+# Anchored + bounded repetition → ReDoS-safe against megabyte inputs.
+_REQ_SPEC_RE = re.compile(r"^([A-Za-z0-9._-]{1,200})(\[[^\]]{0,100}\])?\s*(.*)$")
+
+# Recursion limit used for untrusted TOML parsing (depth-bomb defense).
+_PARSE_RECURSION_LIMIT = 500
 
 # Lockfile filenames.
 _LOCKFILE_NAMES: set[str] = {
@@ -189,11 +207,25 @@ class DependencyAnalyzer:
         manifests.sort(key=lambda m: m.path)
         lockfiles.sort(key=lambda lf: lf.path)
 
+        # Unit 2+: parse manifests into packages (Python in Unit 2;
+        # Node in Unit 3; Ruby/Go/Rust deferred).
+        packages: list[DependencyPackage] = []
+        unscanned_manifests: list[str] = []
+        for m in manifests:
+            if m.is_symlink or m.size_skipped:
+                continue
+            full = plugin_root / m.path
+            if full.name == "pyproject.toml":
+                packages.extend(_parse_pyproject(full, m.path, unscanned_manifests))
+            elif _REQUIREMENTS_TXT_RE.fullmatch(full.name):
+                packages.extend(_parse_requirements_txt(full, m.path, unscanned_manifests))
+            # else: package.json / Gemfile / go.mod / Cargo.toml — not yet parsed
+
         return DependencyReport(
             manifests=manifests,
             lockfiles=lockfiles,
-            packages=[],
-            unscanned_manifests=[],
+            packages=packages,
+            unscanned_manifests=unscanned_manifests,
             scan_status="tier1_only",
             sca=None,
         )
@@ -228,3 +260,181 @@ def _make_info(path: Path, plugin_root: Path) -> ManifestInfo:
         return ManifestInfo(path=rel, is_symlink=False, size_skipped=True)
     size_skipped = size > MAX_READ_BYTES
     return ManifestInfo(path=rel, is_symlink=False, size_skipped=size_skipped)
+
+
+# ============================================================================
+# Python parsers — Unit 2
+# ============================================================================
+
+
+def _parse_requirements_txt(
+    full_path: Path,
+    rel_path: str,
+    unscanned: list[str],
+) -> list[DependencyPackage]:
+    """Parse a requirements.txt file line-by-line.
+
+    Skips comments, blank lines, and pip-option lines (-r, -e, -c, --flags).
+    Malformed package-spec lines are skipped silently; file-level read
+    failures add the manifest to `unscanned`.
+    """
+    try:
+        content = full_path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        unscanned.append(rel_path)
+        return []
+
+    packages: list[DependencyPackage] = []
+    for raw_line in content.splitlines():
+        # Strip inline comments (# and anything after)
+        line = raw_line.split("#", 1)[0].strip()
+        if not line:
+            continue
+        if line.startswith("-"):
+            continue  # -r, -e, -c, --extra-index-url, etc.
+        pkg = _pep508_spec_to_package(line, "runtime", rel_path)
+        if pkg is not None:
+            packages.append(pkg)
+    return packages
+
+
+def _parse_pyproject(
+    full_path: Path,
+    rel_path: str,
+    unscanned: list[str],
+) -> list[DependencyPackage]:
+    """Parse a pyproject.toml file covering both PEP 621 and Poetry sections.
+
+    Parse order: PEP 621 first, then Poetry. Dedup by (name, kind) keeping
+    the first-seen constraint so PEP 621 (the modern standard) wins when
+    both declare the same package+kind.
+
+    Depth-bomb defense: temporarily lower sys.setrecursionlimit to
+    _PARSE_RECURSION_LIMIT around the tomllib.load call and catch any
+    resulting RecursionError alongside TOMLDecodeError / OSError.
+    """
+    original_limit = sys.getrecursionlimit()
+    try:
+        sys.setrecursionlimit(_PARSE_RECURSION_LIMIT)
+        with full_path.open("rb") as f:
+            data = tomllib.load(f)
+    except (RecursionError, tomllib.TOMLDecodeError, OSError, ValueError):
+        unscanned.append(rel_path)
+        return []
+    finally:
+        sys.setrecursionlimit(original_limit)
+
+    if not isinstance(data, dict):
+        unscanned.append(rel_path)
+        return []
+
+    packages: list[DependencyPackage] = []
+    seen: set[tuple[str, str]] = set()
+
+    # PEP 621 first
+    project = data.get("project")
+    if isinstance(project, dict):
+        for spec in project.get("dependencies") or []:
+            pkg = _pep508_spec_to_package(spec, "runtime", rel_path)
+            if pkg is not None and (pkg.name, pkg.kind) not in seen:
+                packages.append(pkg)
+                seen.add((pkg.name, pkg.kind))
+        optional_deps = project.get("optional-dependencies") or {}
+        if isinstance(optional_deps, dict):
+            for specs in optional_deps.values():
+                if not isinstance(specs, list):
+                    continue
+                for spec in specs:
+                    pkg = _pep508_spec_to_package(spec, "optional", rel_path)
+                    if pkg is not None and (pkg.name, pkg.kind) not in seen:
+                        packages.append(pkg)
+                        seen.add((pkg.name, pkg.kind))
+
+    # Poetry second (PEP 621 wins on dedup)
+    tool = data.get("tool")
+    if isinstance(tool, dict):
+        poetry = tool.get("poetry")
+        if isinstance(poetry, dict):
+            main_deps = poetry.get("dependencies") or {}
+            if isinstance(main_deps, dict):
+                for name, value in main_deps.items():
+                    if name == "python":
+                        continue  # python version spec, not a dep
+                    pkg = _poetry_value_to_package(name, value, "runtime", rel_path)
+                    if pkg is not None and (pkg.name, pkg.kind) not in seen:
+                        packages.append(pkg)
+                        seen.add((pkg.name, pkg.kind))
+            groups = poetry.get("group") or {}
+            if isinstance(groups, dict):
+                for group_name, group_data in groups.items():
+                    if not isinstance(group_data, dict):
+                        continue
+                    kind = "dev" if group_name in ("dev", "test") else "optional"
+                    group_deps = group_data.get("dependencies") or {}
+                    if not isinstance(group_deps, dict):
+                        continue
+                    for name, value in group_deps.items():
+                        if name == "python":
+                            continue
+                        pkg = _poetry_value_to_package(name, value, kind, rel_path)
+                        if pkg is not None and (pkg.name, pkg.kind) not in seen:
+                            packages.append(pkg)
+                            seen.add((pkg.name, pkg.kind))
+
+    return packages
+
+
+def _pep508_spec_to_package(
+    spec: object,
+    kind: str,
+    manifest: str,
+) -> Optional[DependencyPackage]:
+    """Convert a PEP 508-ish spec string into a DependencyPackage.
+
+    Returns None if the spec is not a string or doesn't match the anchored
+    bounded regex.
+    """
+    if not isinstance(spec, str):
+        return None
+    stripped = spec.strip()
+    if not stripped:
+        return None
+    m = _REQ_SPEC_RE.match(stripped)
+    if not m:
+        return None
+    name = m.group(1)
+    constraint = m.group(3).strip()
+    return DependencyPackage(
+        ecosystem="PyPI",
+        name=sanitize_string(name, DEFAULT_MAX_NAME_LENGTH),
+        constraint=sanitize_string(constraint, DEFAULT_MAX_DESCRIPTION_LENGTH),
+        kind=kind,
+        manifest=manifest,
+    )
+
+
+def _poetry_value_to_package(
+    name: str,
+    value: object,
+    kind: str,
+    manifest: str,
+) -> Optional[DependencyPackage]:
+    """Convert a Poetry dep value (string or table) into a DependencyPackage.
+
+    Table form: `{version = "^1.0", extras = [...]}` — extract `version`
+    field; fall back to empty constraint if absent.
+    """
+    if isinstance(value, str):
+        constraint = value
+    elif isinstance(value, dict):
+        version = value.get("version", "")
+        constraint = version if isinstance(version, str) else ""
+    else:
+        return None
+    return DependencyPackage(
+        ecosystem="PyPI",
+        name=sanitize_string(name, DEFAULT_MAX_NAME_LENGTH),
+        constraint=sanitize_string(constraint, DEFAULT_MAX_DESCRIPTION_LENGTH),
+        kind=kind,
+        manifest=manifest,
+    )

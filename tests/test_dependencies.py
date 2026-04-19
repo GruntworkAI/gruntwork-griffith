@@ -41,13 +41,12 @@ class TestBasicDetection:
         paths = {m.path for m in report.manifests}
         assert "requirements.txt" in paths
         assert "pyproject.toml" in paths
-        # Unit 1 does not populate packages
-        assert report.packages == []
 
     def test_node_plugin_detects_nested_package_json(self, fixtures_dir):
         report = DependencyAnalyzer().analyze(fixtures_dir / "deps-node-plugin")
         paths = {m.path for m in report.manifests}
         assert "skills/node-skill/package.json" in paths
+        # Node parser lands in Unit 3; packages still empty
         assert report.packages == []
 
     def test_multi_ecosystem_plugin_detects_all_three(self, fixtures_dir):
@@ -58,7 +57,7 @@ class TestBasicDetection:
         assert "Gemfile" in paths
         assert "go.mod" in paths
         assert "Cargo.toml" in paths
-        # Unit 1 detects but never parses Ruby/Go/Rust
+        # Ruby/Go/Rust parsing deferred to Phase 1.6
         assert report.packages == []
 
 
@@ -83,12 +82,9 @@ class TestScanStatus:
 
 
 class TestShape:
-    def test_packages_always_empty_in_unit_1(self, fixtures_dir):
-        for name in (
-            "deps-python-plugin",
-            "deps-node-plugin",
-            "deps-multi-ecosystem-plugin",
-        ):
+    def test_node_and_multi_still_have_empty_packages(self, fixtures_dir):
+        # Node parser lands in Unit 3; Ruby/Go/Rust deferred to Phase 1.6.
+        for name in ("deps-node-plugin", "deps-multi-ecosystem-plugin"):
             report = DependencyAnalyzer().analyze(fixtures_dir / name)
             assert report.packages == []
             assert report.package_count == 0
@@ -323,3 +319,285 @@ class TestDataclasses:
         assert report.scan_status == "tier1_only"
         assert report.sca is None
         assert report.package_count == 0
+
+
+# ============================================================================
+# Unit 2: requirements.txt parser
+# ============================================================================
+
+
+class TestRequirementsTxt:
+    def test_all_expected_packages_parsed(self, fixtures_dir):
+        report = DependencyAnalyzer().analyze(fixtures_dir / "deps-python-plugin")
+        req_pkgs = [p for p in report.packages if p.manifest == "requirements.txt"]
+        names = {p.name for p in req_pkgs}
+        assert names == {
+            "requests",
+            "Pillow",
+            "click",
+            "tiktoken",
+            "package-with-extras",
+        }, f"got: {names}"
+
+    def test_constraints_preserved(self, fixtures_dir):
+        report = DependencyAnalyzer().analyze(fixtures_dir / "deps-python-plugin")
+        by_name = {
+            p.name: p for p in report.packages if p.manifest == "requirements.txt"
+        }
+        assert by_name["requests"].constraint == ">=2.25.0"
+        assert by_name["Pillow"].constraint == ">=10.0.0,<11.0.0"
+        assert by_name["tiktoken"].constraint == "==0.8.0"
+        assert by_name["click"].constraint == ""  # no constraint
+
+    def test_extras_stripped_from_name(self, fixtures_dir):
+        report = DependencyAnalyzer().analyze(fixtures_dir / "deps-python-plugin")
+        by_name = {
+            p.name: p for p in report.packages if p.manifest == "requirements.txt"
+        }
+        # Fixture has "package-with-extras[full]>=1.0" — name should be
+        # "package-with-extras" with extras stripped
+        assert "package-with-extras" in by_name
+        assert by_name["package-with-extras"].constraint == ">=1.0"
+
+    def test_all_requirements_are_pypi_runtime(self, fixtures_dir):
+        report = DependencyAnalyzer().analyze(fixtures_dir / "deps-python-plugin")
+        req_pkgs = [p for p in report.packages if p.manifest == "requirements.txt"]
+        assert all(p.ecosystem == "PyPI" for p in req_pkgs)
+        assert all(p.kind == "runtime" for p in req_pkgs)
+
+    def test_option_lines_skipped(self, fixtures_dir):
+        report = DependencyAnalyzer().analyze(fixtures_dir / "deps-python-plugin")
+        names = {p.name for p in report.packages if p.manifest == "requirements.txt"}
+        # -r dev-requirements.txt, -e ./local-lib, --index-url should not appear
+        for noise in ("dev-requirements.txt", "./local-lib", "simple", "https"):
+            assert noise not in names
+
+    def test_comments_skipped(self, tmp_path):
+        plugin = tmp_path / "comments-plugin"
+        plugin.mkdir()
+        (plugin / "requirements.txt").write_text(
+            "# comment line\n"
+            "requests\n"
+            "Pillow  # inline comment\n"
+            "\n"
+            "click  #trailing comment without space\n"
+        )
+        report = DependencyAnalyzer().analyze(plugin)
+        names = {p.name for p in report.packages}
+        assert names == {"requests", "Pillow", "click"}
+
+
+# ============================================================================
+# Unit 2: pyproject.toml — PEP 621
+# ============================================================================
+
+
+class TestPyprojectPEP621:
+    def test_parses_pep621_runtime_dependencies(self, fixtures_dir):
+        report = DependencyAnalyzer().analyze(fixtures_dir / "deps-python-plugin")
+        by_name = {
+            p.name: p for p in report.packages if p.manifest == "pyproject.toml"
+        }
+        assert "fastapi" in by_name
+        assert by_name["fastapi"].kind == "runtime"
+        assert by_name["fastapi"].constraint == ">=0.100"
+
+    def test_pep621_optional_dependencies_classified_as_optional(self, fixtures_dir):
+        report = DependencyAnalyzer().analyze(fixtures_dir / "deps-python-plugin")
+        by_name = {
+            p.name: p for p in report.packages if p.manifest == "pyproject.toml"
+        }
+        assert by_name["pytest"].kind == "optional"
+        assert by_name["black"].kind == "optional"
+
+    def test_pep621_extras_stripped(self, fixtures_dir):
+        # fixture has "uvicorn[standard]>=0.20"
+        report = DependencyAnalyzer().analyze(fixtures_dir / "deps-python-plugin")
+        by_name = {
+            p.name: p for p in report.packages if p.manifest == "pyproject.toml"
+        }
+        assert "uvicorn" in by_name
+        assert by_name["uvicorn"].constraint == ">=0.20"
+
+
+# ============================================================================
+# Unit 2: pyproject.toml — Poetry style
+# ============================================================================
+
+
+class TestPyprojectPoetry:
+    def test_parses_poetry_runtime_dependencies(self, fixtures_dir):
+        report = DependencyAnalyzer().analyze(fixtures_dir / "deps-poetry-plugin")
+        by_name = {p.name: p for p in report.packages}
+        assert "requests" in by_name
+        assert by_name["requests"].kind == "runtime"
+        assert by_name["requests"].constraint == "^2.28"
+
+    def test_python_version_key_is_skipped(self, fixtures_dir):
+        report = DependencyAnalyzer().analyze(fixtures_dir / "deps-poetry-plugin")
+        names = {p.name for p in report.packages}
+        assert "python" not in names
+
+    def test_table_form_version_extracted(self, fixtures_dir):
+        # Fixture has `click = {version = "^8.1", extras = [...]}`
+        report = DependencyAnalyzer().analyze(fixtures_dir / "deps-poetry-plugin")
+        by_name = {p.name: p for p in report.packages}
+        assert "click" in by_name
+        assert by_name["click"].constraint == "^8.1"
+
+    def test_dev_group_kind_is_dev(self, fixtures_dir):
+        report = DependencyAnalyzer().analyze(fixtures_dir / "deps-poetry-plugin")
+        by_name = {p.name: p for p in report.packages}
+        assert by_name["pytest"].kind == "dev"
+
+    def test_test_group_kind_is_dev(self, fixtures_dir):
+        report = DependencyAnalyzer().analyze(fixtures_dir / "deps-poetry-plugin")
+        by_name = {p.name: p for p in report.packages}
+        assert by_name["pytest-cov"].kind == "dev"
+
+    def test_other_groups_kind_is_optional(self, fixtures_dir):
+        # docs group is neither dev nor test
+        report = DependencyAnalyzer().analyze(fixtures_dir / "deps-poetry-plugin")
+        by_name = {p.name: p for p in report.packages}
+        assert by_name["sphinx"].kind == "optional"
+
+    def test_pep621_and_poetry_coexistence(self, tmp_path):
+        """If a pyproject declares both PEP 621 AND Poetry sections, parse PEP 621 first,
+        then Poetry; dedup by (name, kind) keeping first constraint."""
+        plugin = tmp_path / "coexist-plugin"
+        plugin.mkdir()
+        (plugin / "pyproject.toml").write_text(
+            '[project]\n'
+            'name = "coexist"\n'
+            'dependencies = ["requests>=2.30"]\n'
+            '\n'
+            '[tool.poetry]\n'
+            'name = "coexist"\n'
+            '\n'
+            '[tool.poetry.dependencies]\n'
+            'python = "^3.11"\n'
+            'requests = "^2.28"\n'  # duplicate (name, kind=runtime); PEP 621 wins
+            'numpy = "^1.25"\n'  # only in Poetry
+        )
+        report = DependencyAnalyzer().analyze(plugin)
+        by_name = {p.name: p for p in report.packages}
+        assert by_name["requests"].constraint == ">=2.30", "PEP 621 should win"
+        assert "numpy" in by_name
+        assert by_name["numpy"].constraint == "^1.25"
+
+
+# ============================================================================
+# Unit 2: malformed manifest handling
+# ============================================================================
+
+
+class TestMalformedManifests:
+    def test_malformed_toml_in_unscanned_manifests(self, tmp_path):
+        plugin = tmp_path / "bad-toml"
+        plugin.mkdir()
+        (plugin / "pyproject.toml").write_text("[project\nname = ")  # unclosed
+        report = DependencyAnalyzer().analyze(plugin)
+        assert any(
+            "pyproject.toml" in u for u in report.unscanned_manifests
+        ), f"unscanned: {report.unscanned_manifests}"
+        pyproj_pkgs = [
+            p for p in report.packages if p.manifest.endswith("pyproject.toml")
+        ]
+        assert pyproj_pkgs == []
+
+    def test_malformed_requirements_line_skipped_silently(self, tmp_path):
+        plugin = tmp_path / "bad-reqs"
+        plugin.mkdir()
+        (plugin / "requirements.txt").write_text(
+            "requests>=2.0\n"
+            "@#$% bogus line\n"
+            "Pillow\n"
+        )
+        report = DependencyAnalyzer().analyze(plugin)
+        names = {p.name for p in report.packages}
+        # Valid lines still parsed; malformed line silently skipped
+        assert "requests" in names
+        assert "Pillow" in names
+        # File itself is readable; not in unscanned
+        assert not any(
+            "requirements.txt" in u for u in report.unscanned_manifests
+        )
+
+
+# ============================================================================
+# Unit 2: adversarial parser defense
+# ============================================================================
+
+
+class TestAdversarialParsers:
+    @pytest.mark.adversarial
+    def test_long_line_in_requirements_doesnt_hang(self, tmp_path):
+        """A very long single line must not hang the regex (ReDoS defense
+        via anchored, bounded-repetition pattern)."""
+        import time
+
+        plugin = tmp_path / "long-line"
+        plugin.mkdir()
+        # 100 KB single line (stay well under the 2 MB size_skipped cap so
+        # the parser actually reads it)
+        huge = "a" * (100 * 1024)
+        (plugin / "requirements.txt").write_text(huge + "\n")
+
+        start = time.monotonic()
+        report = DependencyAnalyzer().analyze(plugin)
+        elapsed = time.monotonic() - start
+        assert elapsed < 5.0, f"scan took {elapsed:.1f}s (possible ReDoS)"
+        # The single long line is malformed (exceeds bounded regex); skipped silently
+        assert isinstance(report, DependencyReport)
+
+    @pytest.mark.adversarial
+    def test_deeply_nested_pyproject_does_not_crash(self, tmp_path):
+        """Deeply-nested inline tables may raise RecursionError or
+        TOMLDecodeError in tomllib; Griffith must catch and continue."""
+        plugin = tmp_path / "depth-bomb"
+        plugin.mkdir()
+        depth = 2000
+        # Build deeply nested inline table: a = { b = { b = { ... v = 1 } } }
+        nested = (
+            "[project]\nname = \"depth\"\n\n"
+            "[extra]\nval = "
+            + "{ inner = " * depth
+            + "1"
+            + " }" * depth
+            + "\n"
+        )
+        (plugin / "pyproject.toml").write_text(nested)
+        # Must return without propagating RecursionError
+        report = DependencyAnalyzer().analyze(plugin)
+        # File ends up in unscanned_manifests (or packages empty); either way no crash
+        assert isinstance(report, DependencyReport)
+
+
+# ============================================================================
+# Unit 2: real-plugin integration (R11 pin)
+# ============================================================================
+
+
+REAL_CE = Path.home() / ".claude/plugins/cache/every-marketplace/compound-engineering/2.67.0"
+
+
+@pytest.mark.skipif(not REAL_CE.exists(), reason="compound-engineering not cached")
+class TestRealPluginCompoundEngineering:
+    def test_r11_pin_surfaces_google_genai_and_pillow(self):
+        """R11 requires that scanning CE@2.67.0 surfaces google-genai + Pillow
+        from skills/gemini-imagegen/requirements.txt."""
+        report = DependencyAnalyzer().analyze(REAL_CE)
+        names = {p.name for p in report.packages}
+        assert "google-genai" in names
+        assert "Pillow" in names
+
+    def test_r11_packages_are_runtime(self):
+        report = DependencyAnalyzer().analyze(REAL_CE)
+        by_name = {p.name: p for p in report.packages}
+        assert by_name["google-genai"].kind == "runtime"
+        assert by_name["Pillow"].kind == "runtime"
+
+    def test_r11_manifest_path_is_nested(self):
+        report = DependencyAnalyzer().analyze(REAL_CE)
+        by_name = {p.name: p for p in report.packages}
+        assert by_name["Pillow"].manifest == "skills/gemini-imagegen/requirements.txt"
