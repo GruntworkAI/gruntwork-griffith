@@ -46,8 +46,6 @@ class TestBasicDetection:
         report = DependencyAnalyzer().analyze(fixtures_dir / "deps-node-plugin")
         paths = {m.path for m in report.manifests}
         assert "skills/node-skill/package.json" in paths
-        # Node parser lands in Unit 3; packages still empty
-        assert report.packages == []
 
     def test_multi_ecosystem_plugin_detects_all_three(self, fixtures_dir):
         report = DependencyAnalyzer().analyze(
@@ -82,12 +80,13 @@ class TestScanStatus:
 
 
 class TestShape:
-    def test_node_and_multi_still_have_empty_packages(self, fixtures_dir):
-        # Node parser lands in Unit 3; Ruby/Go/Rust deferred to Phase 1.6.
-        for name in ("deps-node-plugin", "deps-multi-ecosystem-plugin"):
-            report = DependencyAnalyzer().analyze(fixtures_dir / name)
-            assert report.packages == []
-            assert report.package_count == 0
+    def test_multi_ecosystem_still_has_empty_packages(self, fixtures_dir):
+        # Ruby/Go/Rust parsing deferred to Phase 1.6.
+        report = DependencyAnalyzer().analyze(
+            fixtures_dir / "deps-multi-ecosystem-plugin"
+        )
+        assert report.packages == []
+        assert report.package_count == 0
 
     def test_package_count_matches_len(self, minimal_plugin):
         report = DependencyAnalyzer().analyze(minimal_plugin)
@@ -601,3 +600,138 @@ class TestRealPluginCompoundEngineering:
         report = DependencyAnalyzer().analyze(REAL_CE)
         by_name = {p.name: p for p in report.packages}
         assert by_name["Pillow"].manifest == "skills/gemini-imagegen/requirements.txt"
+
+
+# ============================================================================
+# Unit 3: Node parser (package.json)
+# ============================================================================
+
+
+class TestPackageJson:
+    def test_all_four_dep_kinds_parsed(self, fixtures_dir):
+        report = DependencyAnalyzer().analyze(fixtures_dir / "deps-node-plugin")
+        by_name = {p.name: p for p in report.packages}
+        # Fixture has dependencies (express, axios), devDependencies (jest),
+        # peerDependencies (react). No optionalDependencies in the fixture.
+        assert "express" in by_name
+        assert "axios" in by_name
+        assert "jest" in by_name
+        assert "react" in by_name
+
+    def test_kinds_classified_correctly(self, fixtures_dir):
+        report = DependencyAnalyzer().analyze(fixtures_dir / "deps-node-plugin")
+        by_name = {p.name: p for p in report.packages}
+        assert by_name["express"].kind == "runtime"
+        assert by_name["axios"].kind == "runtime"
+        assert by_name["jest"].kind == "dev"
+        assert by_name["react"].kind == "peer"
+
+    def test_constraints_preserved(self, fixtures_dir):
+        report = DependencyAnalyzer().analyze(fixtures_dir / "deps-node-plugin")
+        by_name = {p.name: p for p in report.packages}
+        assert by_name["express"].constraint == "^4.18.0"
+        assert by_name["axios"].constraint == "~1.6.0"
+        assert by_name["jest"].constraint == "^29.0.0"
+        assert by_name["react"].constraint == ">=18"
+
+    def test_ecosystem_is_npm(self, fixtures_dir):
+        report = DependencyAnalyzer().analyze(fixtures_dir / "deps-node-plugin")
+        node_pkgs = [
+            p for p in report.packages if p.manifest.endswith("package.json")
+        ]
+        assert all(p.ecosystem == "npm" for p in node_pkgs)
+
+    def test_optional_dependencies_classified(self, tmp_path):
+        """Inline coverage for optionalDependencies since the shared fixture
+        doesn't have one."""
+        plugin = tmp_path / "node-optional"
+        plugin.mkdir()
+        (plugin / "package.json").write_text(
+            '{"name": "x", "optionalDependencies": {"fsevents": "^2.3"}}'
+        )
+        report = DependencyAnalyzer().analyze(plugin)
+        by_name = {p.name: p for p in report.packages}
+        assert "fsevents" in by_name
+        assert by_name["fsevents"].kind == "optional"
+
+    def test_package_json_without_dep_sections_returns_empty(self, tmp_path):
+        plugin = tmp_path / "no-deps"
+        plugin.mkdir()
+        (plugin / "package.json").write_text(
+            '{"name": "x", "version": "1.0.0"}'
+        )
+        report = DependencyAnalyzer().analyze(plugin)
+        assert report.packages == []
+        # Manifest itself is valid, not in unscanned
+        assert not any(
+            "package.json" in u for u in report.unscanned_manifests
+        )
+
+    def test_wrong_shape_dep_section_skipped(self, tmp_path):
+        """A dep section that isn't a dict should be skipped; other valid
+        sections should still parse."""
+        plugin = tmp_path / "weird-shape"
+        plugin.mkdir()
+        (plugin / "package.json").write_text(
+            '{'
+            '"dependencies": "this should be a dict but is a string",'
+            '"devDependencies": {"jest": "^29.0.0"}'
+            '}'
+        )
+        report = DependencyAnalyzer().analyze(plugin)
+        by_name = {p.name: p for p in report.packages}
+        # devDependencies still parses
+        assert "jest" in by_name
+        assert by_name["jest"].kind == "dev"
+        # No packages from the malformed "dependencies" key
+        assert not any(p.kind == "runtime" for p in report.packages)
+
+    def test_malformed_json_recorded_in_unscanned(self, tmp_path):
+        plugin = tmp_path / "bad-json"
+        plugin.mkdir()
+        (plugin / "package.json").write_text("{ this is not valid json")
+        report = DependencyAnalyzer().analyze(plugin)
+        assert any(
+            "package.json" in u for u in report.unscanned_manifests
+        )
+        assert report.packages == []
+
+
+# ============================================================================
+# Unit 3: adversarial Node parser defense
+# ============================================================================
+
+
+class TestNodeAdversarial:
+    @pytest.mark.adversarial
+    def test_deeply_nested_package_json_does_not_crash(self, tmp_path):
+        """Deeply-nested JSON arrays/objects must be caught by the
+        RecursionError defense rather than crashing."""
+        plugin = tmp_path / "node-depth-bomb"
+        plugin.mkdir()
+        depth = 2000
+        # Build a deeply-nested object: {"a": {"a": {"a": ... 1}}}
+        content = "{" + '"a":' * depth + "1" + "}" * depth
+        (plugin / "package.json").write_text(content)
+        # Must return without propagating RecursionError
+        report = DependencyAnalyzer().analyze(plugin)
+        assert isinstance(report, DependencyReport)
+        # No valid deps in the payload; file may or may not be in unscanned
+        # (depends on which error triggers first — that's fine)
+
+    @pytest.mark.adversarial
+    def test_package_json_with_attacker_named_package_sanitized(self, tmp_path):
+        """Package names with embedded control chars / bidi overrides / ANSI
+        escape must be sanitized before embedding in the report."""
+        plugin = tmp_path / "node-injection"
+        plugin.mkdir()
+        # Use \x1b (ESC) in name; \u202e bidi override; all inside a valid
+        # npm-ish name space. sanitize_string strips these.
+        (plugin / "package.json").write_text(
+            '{"dependencies": {"evil\\u202ename\\u001b[31m": "^1.0"}}'
+        )
+        report = DependencyAnalyzer().analyze(plugin)
+        # All names must have had control chars stripped
+        for p in report.packages:
+            assert "\x1b" not in p.name
+            assert "\u202e" not in p.name

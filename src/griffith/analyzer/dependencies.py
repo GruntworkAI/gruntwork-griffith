@@ -20,6 +20,7 @@ deferred to Phase 1.6.
 
 from __future__ import annotations
 
+import json
 import os
 import re
 import sys
@@ -219,7 +220,9 @@ class DependencyAnalyzer:
                 packages.extend(_parse_pyproject(full, m.path, unscanned_manifests))
             elif _REQUIREMENTS_TXT_RE.fullmatch(full.name):
                 packages.extend(_parse_requirements_txt(full, m.path, unscanned_manifests))
-            # else: package.json / Gemfile / go.mod / Cargo.toml — not yet parsed
+            elif full.name == "package.json":
+                packages.extend(_parse_package_json(full, m.path, unscanned_manifests))
+            # else: Gemfile / go.mod / Cargo.toml — deferred to Phase 1.6
 
         return DependencyReport(
             manifests=manifests,
@@ -438,3 +441,73 @@ def _poetry_value_to_package(
         kind=kind,
         manifest=manifest,
     )
+
+
+# ============================================================================
+# Node parser — Unit 3
+# ============================================================================
+
+
+# Mapping of package.json section names to Griffith kind taxonomy.
+# npm's four conventional dependency sections.
+_PACKAGE_JSON_SECTIONS: dict[str, str] = {
+    "dependencies": "runtime",
+    "devDependencies": "dev",
+    "peerDependencies": "peer",
+    "optionalDependencies": "optional",
+}
+
+
+def _parse_package_json(
+    full_path: Path,
+    rel_path: str,
+    unscanned: list[str],
+) -> list[DependencyPackage]:
+    """Parse a package.json file.
+
+    Covers all four npm dependency sections (dependencies / devDependencies /
+    peerDependencies / optionalDependencies). Malformed JSON lands in
+    `unscanned`. Individual dep sections whose value is not a dict are
+    skipped (other sections still parse).
+
+    Depth-bomb defense: temporarily lower sys.setrecursionlimit to
+    _PARSE_RECURSION_LIMIT around the json.load call and catch any
+    resulting RecursionError alongside JSONDecodeError / OSError.
+    """
+    original_limit = sys.getrecursionlimit()
+    try:
+        sys.setrecursionlimit(_PARSE_RECURSION_LIMIT)
+        with full_path.open("r", encoding="utf-8") as f:
+            data = json.load(f)
+    except (RecursionError, json.JSONDecodeError, OSError, ValueError):
+        unscanned.append(rel_path)
+        return []
+    finally:
+        sys.setrecursionlimit(original_limit)
+
+    if not isinstance(data, dict):
+        unscanned.append(rel_path)
+        return []
+
+    packages: list[DependencyPackage] = []
+    for section_name, kind in _PACKAGE_JSON_SECTIONS.items():
+        section = data.get(section_name)
+        if not isinstance(section, dict):
+            continue  # skip malformed section; other sections still parse
+        for name, constraint in section.items():
+            if not isinstance(name, str):
+                continue
+            if not isinstance(constraint, str):
+                constraint = ""
+            packages.append(
+                DependencyPackage(
+                    ecosystem="npm",
+                    name=sanitize_string(name, DEFAULT_MAX_NAME_LENGTH),
+                    constraint=sanitize_string(
+                        constraint, DEFAULT_MAX_DESCRIPTION_LENGTH
+                    ),
+                    kind=kind,
+                    manifest=rel_path,
+                )
+            )
+    return packages
