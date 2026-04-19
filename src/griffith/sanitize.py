@@ -68,3 +68,87 @@ def sanitize_frontmatter(frontmatter: dict) -> dict:
         else:
             out[key] = value
     return out
+
+
+# ============================================================================
+# Destination-specific escape helpers — Phase 1.5 Unit 4
+# ============================================================================
+#
+# Untrusted content (plugin metadata, CVE summaries) reaches multiple render
+# destinations with different injection surfaces:
+#   * JSON: `sanitize_string` alone is sufficient (no markup interpretation).
+#   * Markdown (LMF wrapper → Claude session): Markdown specials + HTML tags
+#     + URLs-as-autolinks are all injection vectors.
+#   * Rich terminal: Rich's own `[style]...[/]` markup grammar needs escape.
+#
+# These helpers layer on top of `sanitize_string` (which strips control /
+# ANSI / bidi / zero-width codepoints) with destination-specific escape
+# behavior.
+
+# HTML tag strip patterns. Fixpoint iteration (below) neutralizes nested
+# bypasses like `<<script>script>...`.
+_HTML_COMMENT_RE = re.compile(r"<!--[\s\S]*?-->")
+_HTML_CDATA_RE = re.compile(r"<!\[CDATA\[[\s\S]*?\]\]>")
+_HTML_TAG_RE = re.compile(r"<\s*/?\s*\w+[^>]*>")
+
+# Markdown special characters that can trigger formatting or link rendering.
+# Backslash is escaped FIRST so subsequent escapes don't double-process.
+_MARKDOWN_SPECIALS = "[]`*_"
+
+
+def sanitize_for_markdown(
+    value: object, max_length: int = DEFAULT_MAX_DESCRIPTION_LENGTH
+) -> str:
+    """Sanitize a string for embedding in a Markdown context.
+
+    Applied in order:
+      1. `sanitize_string` strips control / ANSI / bidi / zero-width and caps
+         length (cap applies BEFORE escaping — escape-expansion may push the
+         final string slightly past max_length, which is acceptable).
+      2. HTML tag + comment + CDATA stripping via fixpoint iteration
+         (neutralizes `<<script>script>...` nested-tag bypasses).
+      3. Residual `<`/`>` encoded as `&lt;`/`&gt;` so leftover angle brackets
+         cannot reintroduce injection.
+      4. Markdown specials `\\ [ ] \\` * _` escaped with leading backslash
+         (backslash escaped first to avoid double-processing).
+    """
+    s = sanitize_string(value, max_length)
+    if not s:
+        return ""
+
+    # Fixpoint strip: keep iterating until the string stops changing.
+    while True:
+        new_s = _HTML_COMMENT_RE.sub("", s)
+        new_s = _HTML_CDATA_RE.sub("", new_s)
+        new_s = _HTML_TAG_RE.sub("", new_s)
+        if new_s == s:
+            break
+        s = new_s
+
+    # Escape residual angle brackets.
+    s = s.replace("<", "&lt;").replace(">", "&gt;")
+
+    # Escape backslash first, then other Markdown specials.
+    s = s.replace("\\", "\\\\")
+    for ch in _MARKDOWN_SPECIALS:
+        s = s.replace(ch, "\\" + ch)
+
+    return s
+
+
+def sanitize_for_rich(
+    value: object, max_length: int = DEFAULT_MAX_DESCRIPTION_LENGTH
+) -> str:
+    """Sanitize a string for embedding in a Rich console context.
+
+    Applies `sanitize_string` first, then delegates Rich-markup escaping to
+    the library's own `rich.markup.escape()` — which correctly handles edge
+    cases like pre-escaped backslashes (`\\\\[bold]`) that a custom regex
+    like `[` → `\\[` would miss.
+    """
+    from rich.markup import escape as _rich_escape
+
+    s = sanitize_string(value, max_length)
+    if not s:
+        return ""
+    return _rich_escape(s)
