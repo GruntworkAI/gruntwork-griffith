@@ -114,6 +114,23 @@ class ManifestInfoDict(TypedDict):
     size_skipped: bool
 
 
+class VulnerabilityDict(TypedDict):
+    id: str  # untrusted (from osv-scanner output)
+    severity: str  # trusted Griffith enum: critical|high|medium|low|info
+    severity_raw: str  # untrusted (CVSS numeric or vector as emitted)
+    summary: str  # untrusted
+    affected_package: str  # untrusted
+    fixed_versions: list[str]  # untrusted
+
+
+class SCAResultDict(TypedDict):
+    osv_scanner_version: str  # trusted (probed from --version)
+    vulnerability_count: int
+    vulnerabilities: list[VulnerabilityDict]
+    note: Optional[str]  # trusted (griffith-authored explanation)
+    error: Optional[str]  # untrusted tail of osv-scanner stderr may be embedded
+
+
 class DependencyDict(TypedDict):
     scan_status: ScanStatus
     manifests: list[ManifestInfoDict]
@@ -122,7 +139,7 @@ class DependencyDict(TypedDict):
     ecosystems: list[str]
     package_count: int
     packages: list[DependencyPackageDict]
-    sca: Optional[dict]  # populated in Unit 6 via SCAResultDict; None in Tier 1
+    sca: Optional[SCAResultDict]  # populated in Unit 6 when --sca is used
 
 
 class MetaDict(TypedDict):
@@ -185,6 +202,15 @@ UNTRUSTED_FIELDS: list[str] = [
     "dependencies.packages[].name",
     "dependencies.packages[].constraint",
     "dependencies.packages[].manifest",
+    # Phase 1.5 Unit 6 Tier 2 (--sca) fields. osv-scanner output is treated
+    # as untrusted: its JSON reflects vulnerability metadata sourced from
+    # upstream registries (GHSA / CVE / OSV) that Griffith does not audit.
+    "dependencies.sca.vulnerabilities[].id",
+    "dependencies.sca.vulnerabilities[].severity_raw",
+    "dependencies.sca.vulnerabilities[].summary",
+    "dependencies.sca.vulnerabilities[].affected_package",
+    "dependencies.sca.vulnerabilities[].fixed_versions[]",
+    "dependencies.sca.error",
 ]
 
 
@@ -286,7 +312,33 @@ def _build_dependency_dict(dep_report) -> DependencyDict:
             )
             for p in dep_report.packages
         ],
-        sca=None,  # Tier 2 populated in Unit 6
+        sca=_build_sca_dict(dep_report.sca) if dep_report.sca is not None else None,
+    )
+
+
+def _build_sca_dict(sca) -> SCAResultDict:
+    """Convert an SCAResult dataclass to its JSON-ready TypedDict shape.
+
+    `scan_status` on SCAResult is intentionally NOT surfaced here — the top-
+    level `dependencies.scan_status` field is the canonical consumer surface
+    and is populated from sca.scan_status by DependencyAnalyzer.
+    """
+    return SCAResultDict(
+        osv_scanner_version=sca.osv_scanner_version,
+        vulnerability_count=sca.vulnerability_count,
+        vulnerabilities=[
+            VulnerabilityDict(
+                id=v.id,
+                severity=v.severity,
+                severity_raw=v.severity_raw,
+                summary=v.summary,
+                affected_package=v.affected_package,
+                fixed_versions=list(v.fixed_versions),
+            )
+            for v in sca.vulnerabilities
+        ],
+        note=sca.note,
+        error=sca.error,
     )
 
 

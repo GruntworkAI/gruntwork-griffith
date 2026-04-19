@@ -318,6 +318,72 @@ def _render_dependencies(report: Report, console: Console) -> None:
         if len(unscanned) > 5:
             console.print(f"    [yellow]... +{len(unscanned) - 5} more[/]")
 
+    # Tier 2 CVE results (--sca path only)
+    sca = deps.get("sca")
+    if sca is not None:
+        _render_sca(sca, deps.get("scan_status"), console)
+
+
+def _render_sca(sca: dict, scan_status: str | None, console: Console) -> None:
+    """Render the Tier 2 (osv-scanner) section of a Dependencies block.
+
+    The scan_status drives the outer framing: `ok` with vulns → severity
+    grouping; `ok` with 0 vulns + note → success + note; failure statuses
+    → yellow warning line with the error text.
+    """
+    from rich.markup import escape
+
+    version = sca.get("osv_scanner_version", "unknown")
+    vuln_count = sca.get("vulnerability_count", 0)
+    console.print(
+        f"  [bold]CVE scan[/] "
+        f"[dim](osv-scanner {escape(str(version))}, status: {escape(str(scan_status))})[/]"
+    )
+
+    if scan_status == "sca_requested_and_failed" or scan_status == "sca_requested_and_timed_out":
+        err = sca.get("error") or "osv-scanner failed; see JSON output for detail"
+        console.print(f"    [yellow]⚠ {escape(str(err))}[/]")
+        return
+
+    if scan_status == "sca_malformed_output":
+        err = sca.get("error") or "osv-scanner output was not valid JSON"
+        console.print(f"    [yellow]⚠ {escape(str(err))}[/]")
+        return
+
+    # scan_status == "ok"
+    note = sca.get("note")
+    if note:
+        console.print(f"    [dim]{escape(str(note))}[/]")
+    if vuln_count == 0:
+        console.print("    [green]no known vulnerabilities[/]")
+        return
+
+    # Group by severity (severity is Griffith-trusted, no escape needed on key)
+    by_sev: dict[str, list] = {}
+    for v in sca.get("vulnerabilities") or []:
+        by_sev.setdefault(v["severity"], []).append(v)
+    console.print(f"    [bold]{vuln_count} vulnerability(ies)[/]")
+    for sev in ("critical", "high", "medium", "low", "info"):
+        group = by_sev.get(sev)
+        if not group:
+            continue
+        sev_style = _SEVERITY_STYLE.get(sev, "white")
+        console.print(f"    [{sev_style}]{sev}[/] ({len(group)})")
+        for v in group[:5]:
+            pkg = escape(str(v.get("affected_package", "?")))
+            vid = escape(str(v.get("id", "?")))
+            summary = escape(str(v.get("summary", ""))[:120])
+            fixed = v.get("fixed_versions") or []
+            fixed_str = ""
+            if fixed:
+                fixed_display = ", ".join(escape(str(f)) for f in fixed[:3])
+                if len(fixed) > 3:
+                    fixed_display += f", +{len(fixed) - 3}"
+                fixed_str = f" [dim]fixed: {fixed_display}[/]"
+            console.print(f"      [cyan]{pkg}[/] {vid}  [dim]{summary}[/]{fixed_str}")
+        if len(group) > 5:
+            console.print(f"      [dim]... +{len(group) - 5} more[/]")
+
 
 def _render_footer(report: Report, console: Console) -> None:
     meta = report["meta"]

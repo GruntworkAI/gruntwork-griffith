@@ -69,8 +69,17 @@ class TestScanStatus:
         report = DependencyAnalyzer().analyze(minimal_plugin)
         assert report.scan_status == "tier1_only"
 
-    def test_sca_true_raises_not_implemented_pointing_at_unit_6(self, minimal_plugin):
-        with pytest.raises(NotImplementedError, match="Unit 6"):
+    def test_sca_true_raises_when_osv_scanner_missing(
+        self, minimal_plugin, monkeypatch
+    ):
+        """Unit 6: --sca hard-fails loudly when osv-scanner can't be found."""
+        from griffith.analyzer.osv_adapter import OSVScannerMissingError
+
+        monkeypatch.setattr(
+            "griffith.analyzer.osv_adapter.find_osv_scanner",
+            lambda **kw: None,
+        )
+        with pytest.raises(OSVScannerMissingError):
             DependencyAnalyzer().analyze(minimal_plugin, sca=True)
 
 

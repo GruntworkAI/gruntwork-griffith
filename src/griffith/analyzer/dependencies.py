@@ -124,13 +124,19 @@ class Vulnerability:
 
 @dataclass
 class SCAResult:
-    """Tier 2 CVE result. None when --sca not set. Populated in Unit 6."""
+    """Tier 2 CVE result. None when --sca not set. Populated in Unit 6.
+
+    `scan_status` mirrors the ScanStatus enum; the DependencyAnalyzer
+    propagates this up to DependencyReport.scan_status so the top-level
+    field in the JSON schema remains the canonical surface.
+    """
 
     osv_scanner_version: str
     vulnerability_count: int
     vulnerabilities: list[Vulnerability] = field(default_factory=list)
     note: Optional[str] = None
     error: Optional[str] = None
+    scan_status: ScanStatus = "ok"
 
 
 @dataclass
@@ -170,12 +176,6 @@ class DependencyAnalyzer:
         plugin_path: Path | str,
         sca: bool = False,
     ) -> DependencyReport:
-        if sca:
-            raise NotImplementedError(
-                "Tier 2 (--sca CVE scan) is not implemented until Phase 1.5 "
-                "Unit 6. Call analyze(path, sca=False) for Tier 1 listing."
-            )
-
         plugin_root = Path(plugin_path)
         if not plugin_root.exists():
             raise FileNotFoundError(
@@ -224,7 +224,7 @@ class DependencyAnalyzer:
                 packages.extend(_parse_package_json(full, m.path, unscanned_manifests))
             # else: Gemfile / go.mod / Cargo.toml — deferred to Phase 1.6
 
-        return DependencyReport(
+        report = DependencyReport(
             manifests=manifests,
             lockfiles=lockfiles,
             packages=packages,
@@ -232,6 +232,26 @@ class DependencyAnalyzer:
             scan_status="tier1_only",
             sca=None,
         )
+
+        if sca:
+            # Import here to keep the Tier 1 path free of subprocess/osv imports.
+            from griffith.analyzer.osv_adapter import (
+                OSVScannerMissingError,
+                find_osv_scanner,
+                run_osv_scanner,
+            )
+
+            osv_binary = find_osv_scanner()
+            if osv_binary is None:
+                raise OSVScannerMissingError(
+                    "--sca requires osv-scanner on PATH "
+                    "(or set GRIFFITH_OSV_SCANNER to an absolute path)."
+                )
+            sca_result = run_osv_scanner(osv_binary, plugin_root)
+            report.sca = sca_result
+            report.scan_status = sca_result.scan_status
+
+        return report
 
 
 # ============================================================================
