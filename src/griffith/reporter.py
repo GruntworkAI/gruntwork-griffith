@@ -90,6 +90,8 @@ def _render_single_rich(report: Report, console: Console) -> None:
     console.print()
     _render_architecture(report, console)
     console.print()
+    _render_dependencies(report, console)
+    console.print()
     _render_footer(report, console)
 
 
@@ -242,6 +244,145 @@ def _render_architecture(report: Report, console: Console) -> None:
         console.print("  [bold]recommendations:[/]")
         for rec in arch["recommendations"]:
             console.print(f"    - [cyan]{rec}[/]")
+
+
+def _render_dependencies(report: Report, console: Console) -> None:
+    """Render the Dependencies section (Phase 1.5 Unit 5 — Tier 1 only).
+
+    Skip entirely when the plugin has no dep manifests / lockfiles /
+    unscanned entries (most plugins). Symlink-only-manifests case renders a
+    single safety-refusal line rather than an empty package table. The Tier
+    2 CVE branch lands in Unit 6.
+    """
+    deps = report["dependencies"]
+    manifests = deps.get("manifests") or []
+    lockfiles = deps.get("lockfiles") or []
+    packages = deps.get("packages") or []
+    unscanned = deps.get("unscanned_manifests") or []
+
+    if not manifests and not lockfiles and not packages and not unscanned:
+        return  # terse minimal-plugin case; omit section entirely
+
+    console.print("Dependencies", style="bold")
+
+    # Symlink-only case: every detected manifest is a symlink
+    symlink_only_manifests = manifests and all(m.get("is_symlink") for m in manifests)
+    if symlink_only_manifests and not packages and not lockfiles:
+        console.print(
+            "  [yellow]Symlinked manifests refused for safety "
+            "— see Security findings[/]"
+        )
+        return
+
+    # Ecosystem + package summary
+    ecosystems = deps.get("ecosystems") or []
+    if ecosystems:
+        console.print(
+            f"  ecosystems: [cyan]{', '.join(ecosystems)}[/]  "
+            f"packages: [bold]{deps['package_count']}[/]"
+        )
+    elif packages:
+        console.print(f"  packages: [bold]{deps['package_count']}[/]")
+
+    # Per-manifest grouping of packages (cap 10 per manifest)
+    if packages:
+        by_manifest: dict[str, list[dict]] = {}
+        for p in packages:
+            by_manifest.setdefault(p["manifest"], []).append(p)
+        for manifest_path in sorted(by_manifest):
+            group = by_manifest[manifest_path]
+            console.print(f"  [dim]{manifest_path}[/]  ({len(group)})")
+            for p in group[:10]:
+                # kind field is Griffith-controlled (runtime/dev/optional/peer);
+                # use parens so Rich doesn't treat e.g. "[optional]" as a style tag
+                kind_tag = f"[dim]({p['kind']})[/] " if p["kind"] != "runtime" else ""
+                constraint = f" [dim]{p['constraint']}[/]" if p["constraint"] else ""
+                console.print(f"    {kind_tag}[cyan]{p['name']}[/]{constraint}")
+            if len(group) > 10:
+                console.print(f"    [dim]... +{len(group) - 10} more[/]")
+
+    # Lockfiles (detected, not parsed in Tier 1)
+    if lockfiles:
+        lf_paths = sorted(lf["path"] for lf in lockfiles)
+        console.print(f"  [dim]lockfiles ({len(lf_paths)}):[/]")
+        for lf in lf_paths[:5]:
+            console.print(f"    [dim]- {lf}[/]")
+        if len(lf_paths) > 5:
+            console.print(f"    [dim]... +{len(lf_paths) - 5} more[/]")
+
+    # Unscanned manifests (parse failures) — info-level warning
+    if unscanned:
+        console.print(f"  [yellow]⚠ could not parse ({len(unscanned)}):[/]")
+        for path in unscanned[:5]:
+            console.print(f"    [yellow]- {path}[/]")
+        if len(unscanned) > 5:
+            console.print(f"    [yellow]... +{len(unscanned) - 5} more[/]")
+
+    # Tier 2 CVE results (--sca path only)
+    sca = deps.get("sca")
+    if sca is not None:
+        _render_sca(sca, deps.get("scan_status"), console)
+
+
+def _render_sca(sca: dict, scan_status: str | None, console: Console) -> None:
+    """Render the Tier 2 (osv-scanner) section of a Dependencies block.
+
+    The scan_status drives the outer framing: `ok` with vulns → severity
+    grouping; `ok` with 0 vulns + note → success + note; failure statuses
+    → yellow warning line with the error text.
+    """
+    from rich.markup import escape
+
+    version = sca.get("osv_scanner_version", "unknown")
+    vuln_count = sca.get("vulnerability_count", 0)
+    console.print(
+        f"  [bold]CVE scan[/] "
+        f"[dim](osv-scanner {escape(str(version))}, status: {escape(str(scan_status))})[/]"
+    )
+
+    if scan_status == "sca_requested_and_failed" or scan_status == "sca_requested_and_timed_out":
+        err = sca.get("error") or "osv-scanner failed; see JSON output for detail"
+        console.print(f"    [yellow]⚠ {escape(str(err))}[/]")
+        return
+
+    if scan_status == "sca_malformed_output":
+        err = sca.get("error") or "osv-scanner output was not valid JSON"
+        console.print(f"    [yellow]⚠ {escape(str(err))}[/]")
+        return
+
+    # scan_status == "ok"
+    note = sca.get("note")
+    if note:
+        console.print(f"    [dim]{escape(str(note))}[/]")
+    if vuln_count == 0:
+        console.print("    [green]no known vulnerabilities[/]")
+        return
+
+    # Group by severity (severity is Griffith-trusted, no escape needed on key)
+    by_sev: dict[str, list] = {}
+    for v in sca.get("vulnerabilities") or []:
+        by_sev.setdefault(v["severity"], []).append(v)
+    console.print(f"    [bold]{vuln_count} vulnerability(ies)[/]")
+    for sev in ("critical", "high", "medium", "low", "info"):
+        group = by_sev.get(sev)
+        if not group:
+            continue
+        sev_style = _SEVERITY_STYLE.get(sev, "white")
+        console.print(f"    [{sev_style}]{sev}[/] ({len(group)})")
+        for v in group[:5]:
+            pkg = escape(str(v.get("affected_package", "?")))
+            vid = escape(str(v.get("id", "?")))
+            summary = escape(str(v.get("summary", ""))[:120])
+            fixed = v.get("fixed_versions") or []
+            fixed_str = ""
+            if fixed:
+                fixed_display = ", ".join(escape(str(f)) for f in fixed[:3])
+                if len(fixed) > 3:
+                    fixed_display += f", +{len(fixed) - 3}"
+                fixed_str = f" [dim]fixed: {fixed_display}[/]"
+            console.print(f"      [cyan]{pkg}[/] {vid}  [dim]{summary}[/]{fixed_str}")
+        if len(group) > 5:
+            console.print(f"      [dim]... +{len(group) - 5} more[/]")
 
 
 def _render_footer(report: Report, console: Console) -> None:

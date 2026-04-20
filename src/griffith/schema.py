@@ -18,7 +18,7 @@ Untrusted content:
 from __future__ import annotations
 
 import datetime
-from typing import Any, Literal, TypedDict
+from typing import Any, Literal, Optional, TypedDict
 
 from griffith import __version__
 
@@ -90,6 +90,58 @@ class ArchitectureDict(TypedDict):
     recommendations: list[str]
 
 
+# Phase 1.5 Unit 5: dependencies section (Tier 1)
+ScanStatus = Literal[
+    "ok",
+    "tier1_only",
+    "sca_requested_and_failed",
+    "sca_requested_and_timed_out",
+    "sca_malformed_output",
+]
+
+
+class DependencyPackageDict(TypedDict):
+    ecosystem: str  # untrusted
+    name: str  # untrusted
+    constraint: str  # untrusted
+    kind: str  # trusted (runtime|dev|optional|peer)
+    manifest: str  # untrusted (plugin-controlled path)
+
+
+class ManifestInfoDict(TypedDict):
+    path: str  # untrusted
+    is_symlink: bool
+    size_skipped: bool
+
+
+class VulnerabilityDict(TypedDict):
+    id: str  # untrusted (from osv-scanner output)
+    severity: str  # trusted Griffith enum: critical|high|medium|low|info
+    severity_raw: str  # untrusted (CVSS numeric or vector as emitted)
+    summary: str  # untrusted
+    affected_package: str  # untrusted
+    fixed_versions: list[str]  # untrusted
+
+
+class SCAResultDict(TypedDict):
+    osv_scanner_version: str  # trusted (probed from --version)
+    vulnerability_count: int
+    vulnerabilities: list[VulnerabilityDict]
+    note: Optional[str]  # trusted (griffith-authored explanation)
+    error: Optional[str]  # untrusted tail of osv-scanner stderr may be embedded
+
+
+class DependencyDict(TypedDict):
+    scan_status: ScanStatus
+    manifests: list[ManifestInfoDict]
+    lockfiles: list[ManifestInfoDict]
+    unscanned_manifests: list[str]
+    ecosystems: list[str]
+    package_count: int
+    packages: list[DependencyPackageDict]
+    sca: Optional[SCAResultDict]  # populated in Unit 6 when --sca is used
+
+
 class MetaDict(TypedDict):
     griffith_version: str
     griffith_hardening_version: str
@@ -104,6 +156,7 @@ class Report(TypedDict):
     security: SecurityDict
     footprint: FootprintDict
     architecture: ArchitectureDict
+    dependencies: DependencyDict  # Phase 1.5 Unit 5: Tier 1 detection; Tier 2 SCA in Unit 6
     analysis_scope: list[str]
     untrusted_fields: list[str]
     meta: MetaDict
@@ -140,6 +193,24 @@ UNTRUSTED_FIELDS: list[str] = [
     "security.findings[].file",
     "architecture.efficiency_notes[]",
     "architecture.recommendations[]",
+    # Phase 1.5 Unit 5 Tier 1 dependency fields (all plugin-controlled content).
+    # Tier 2 SCA fields (dependencies.sca.*) are appended in Unit 6.
+    "dependencies.manifests[].path",
+    "dependencies.lockfiles[].path",
+    "dependencies.unscanned_manifests[]",
+    "dependencies.packages[].ecosystem",
+    "dependencies.packages[].name",
+    "dependencies.packages[].constraint",
+    "dependencies.packages[].manifest",
+    # Phase 1.5 Unit 6 Tier 2 (--sca) fields. osv-scanner output is treated
+    # as untrusted: its JSON reflects vulnerability metadata sourced from
+    # upstream registries (GHSA / CVE / OSV) that Griffith does not audit.
+    "dependencies.sca.vulnerabilities[].id",
+    "dependencies.sca.vulnerabilities[].severity_raw",
+    "dependencies.sca.vulnerabilities[].summary",
+    "dependencies.sca.vulnerabilities[].affected_package",
+    "dependencies.sca.vulnerabilities[].fixed_versions[]",
+    "dependencies.sca.error",
 ]
 
 
@@ -149,6 +220,7 @@ def build_report(
     security_findings: list,
     footprint,
     architecture,
+    dependency_report,
     source: str,
     source_type: SourceType,
     plugin_path_override: str | None = None,
@@ -204,9 +276,69 @@ def build_report(
             efficiency_notes=list(architecture.efficiency_notes),
             recommendations=list(architecture.recommendations),
         ),
+        dependencies=_build_dependency_dict(dependency_report),
         analysis_scope=list(ANALYSIS_SCOPE),
         untrusted_fields=list(UNTRUSTED_FIELDS),
         meta=_build_meta(source_type),
+    )
+
+
+def _build_dependency_dict(dep_report) -> DependencyDict:
+    """Convert a DependencyReport dataclass to its JSON-ready TypedDict shape."""
+    return DependencyDict(
+        scan_status=dep_report.scan_status,
+        manifests=[
+            ManifestInfoDict(
+                path=m.path, is_symlink=m.is_symlink, size_skipped=m.size_skipped
+            )
+            for m in dep_report.manifests
+        ],
+        lockfiles=[
+            ManifestInfoDict(
+                path=lf.path, is_symlink=lf.is_symlink, size_skipped=lf.size_skipped
+            )
+            for lf in dep_report.lockfiles
+        ],
+        unscanned_manifests=list(dep_report.unscanned_manifests),
+        ecosystems=list(dep_report.ecosystems),
+        package_count=dep_report.package_count,
+        packages=[
+            DependencyPackageDict(
+                ecosystem=p.ecosystem,
+                name=p.name,
+                constraint=p.constraint,
+                kind=p.kind,
+                manifest=p.manifest,
+            )
+            for p in dep_report.packages
+        ],
+        sca=_build_sca_dict(dep_report.sca) if dep_report.sca is not None else None,
+    )
+
+
+def _build_sca_dict(sca) -> SCAResultDict:
+    """Convert an SCAResult dataclass to its JSON-ready TypedDict shape.
+
+    `scan_status` on SCAResult is intentionally NOT surfaced here — the top-
+    level `dependencies.scan_status` field is the canonical consumer surface
+    and is populated from sca.scan_status by DependencyAnalyzer.
+    """
+    return SCAResultDict(
+        osv_scanner_version=sca.osv_scanner_version,
+        vulnerability_count=sca.vulnerability_count,
+        vulnerabilities=[
+            VulnerabilityDict(
+                id=v.id,
+                severity=v.severity,
+                severity_raw=v.severity_raw,
+                summary=v.summary,
+                affected_package=v.affected_package,
+                fixed_versions=list(v.fixed_versions),
+            )
+            for v in sca.vulnerabilities
+        ],
+        note=sca.note,
+        error=sca.error,
     )
 
 

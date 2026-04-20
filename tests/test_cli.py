@@ -105,3 +105,237 @@ class TestStubCommands:
         result = runner.invoke(main, ["scan-installed"])
         assert result.exit_code != 0
         assert "not yet implemented" in result.stderr.lower()
+
+
+# ============================================================================
+# Phase 1.5 Unit 5: Dependencies section E2E
+# ============================================================================
+
+
+class TestDependenciesCliE2E:
+    def test_cli_json_contains_deps_section(self, runner, fixtures_dir):
+        result = runner.invoke(
+            main, ["analyze", str(fixtures_dir / "deps-python-plugin"), "--json"]
+        )
+        assert result.exit_code == 0, result.stderr
+        parsed = json.loads(result.stdout)
+        assert "dependencies" in parsed
+        assert parsed["dependencies"]["package_count"] == 9
+        names = {p["name"] for p in parsed["dependencies"]["packages"]}
+        assert "fastapi" in names
+        assert "requests" in names
+
+    def test_cli_rich_shows_dependencies_section(self, runner, fixtures_dir):
+        result = runner.invoke(
+            main, ["analyze", str(fixtures_dir / "deps-python-plugin")]
+        )
+        assert result.exit_code == 0, result.stderr
+        assert "Dependencies" in result.stdout
+
+    def test_cli_json_minimal_plugin_has_empty_deps(self, runner, minimal_plugin):
+        result = runner.invoke(main, ["analyze", str(minimal_plugin), "--json"])
+        assert result.exit_code == 0
+        parsed = json.loads(result.stdout)
+        deps = parsed["dependencies"]
+        assert deps["scan_status"] == "tier1_only"
+        assert deps["packages"] == []
+        assert deps["manifests"] == []
+        assert deps["sca"] is None
+
+    def test_cli_scan_status_and_ecosystems_in_marketplace_reports(
+        self, runner, fixtures_dir
+    ):
+        """Each plugin in a marketplace scan gets its own dependencies section."""
+        mp = str(fixtures_dir / "minimal-marketplace")
+        result = runner.invoke(main, ["analyze", mp, "--json"])
+        assert result.exit_code == 0, result.stderr
+        parsed = json.loads(result.stdout)
+        for r in parsed["reports"]:
+            assert "dependencies" in r
+            assert r["dependencies"]["scan_status"] == "tier1_only"
+
+
+# ============================================================================
+# Phase 1.5 Unit 6: --sca flag (Tier 2 CVE scanning)
+# ============================================================================
+
+
+class TestScaCliE2E:
+    def test_sca_hard_fails_with_exit_2_when_binary_missing(
+        self, runner, minimal_plugin, monkeypatch
+    ):
+        """--sca must exit 2 (distinct from 1) when osv-scanner is not found."""
+        monkeypatch.setattr(
+            "griffith.analyzer.osv_adapter.find_osv_scanner",
+            lambda **kw: None,
+        )
+        result = runner.invoke(main, ["analyze", str(minimal_plugin), "--sca"])
+        assert result.exit_code == 2, f"stderr={result.stderr}"
+        assert "osv-scanner" in result.stderr.lower()
+        # Install pitch must surface
+        assert "brew install osv-scanner" in result.stderr
+
+    def test_no_sca_never_probes_for_osv_scanner(
+        self, runner, minimal_plugin, monkeypatch
+    ):
+        """Default (no --sca) path must not call find_osv_scanner at all."""
+        called = {"n": 0}
+
+        def tripwire(**kw):
+            called["n"] += 1
+            return None
+
+        monkeypatch.setattr(
+            "griffith.analyzer.osv_adapter.find_osv_scanner", tripwire
+        )
+        result = runner.invoke(main, ["analyze", str(minimal_plugin)])
+        assert result.exit_code == 0, result.stderr
+        assert called["n"] == 0
+
+    def test_sca_populates_sca_field_in_json(
+        self, runner, fixtures_dir, tmp_path, monkeypatch
+    ):
+        """Stubbed adapter yields a populated dependencies.sca in JSON."""
+        from griffith.analyzer.dependencies import SCAResult, Vulnerability
+
+        fake_result = SCAResult(
+            osv_scanner_version="2.3.5",
+            vulnerability_count=2,
+            vulnerabilities=[
+                Vulnerability(
+                    id="GHSA-crit",
+                    severity="critical",
+                    severity_raw="9.8",
+                    summary="Critical RCE",
+                    affected_package="requests",
+                    fixed_versions=["2.31.0"],
+                ),
+                Vulnerability(
+                    id="GHSA-high",
+                    severity="high",
+                    severity_raw="7.5",
+                    summary="SSRF",
+                    affected_package="requests",
+                    fixed_versions=[],
+                ),
+            ],
+            scan_status="ok",
+        )
+        monkeypatch.setattr(
+            "griffith.analyzer.osv_adapter.find_osv_scanner",
+            lambda **kw: tmp_path / "fake-osv",
+        )
+        monkeypatch.setattr(
+            "griffith.analyzer.osv_adapter.run_osv_scanner",
+            lambda *a, **kw: fake_result,
+        )
+        result = runner.invoke(
+            main,
+            ["analyze", str(fixtures_dir / "deps-python-plugin"), "--sca", "--json"],
+        )
+        assert result.exit_code == 0, result.stderr
+        parsed = json.loads(result.stdout)
+        deps = parsed["dependencies"]
+        assert deps["scan_status"] == "ok"
+        assert deps["sca"] is not None
+        assert deps["sca"]["osv_scanner_version"] == "2.3.5"
+        assert deps["sca"]["vulnerability_count"] == 2
+        ids = [v["id"] for v in deps["sca"]["vulnerabilities"]]
+        assert "GHSA-crit" in ids
+        assert "GHSA-high" in ids
+
+    def test_sca_untrusted_fields_includes_tier2_paths(
+        self, runner, minimal_plugin, tmp_path, monkeypatch
+    ):
+        """untrusted_fields should list Tier 2 dotted paths after --sca."""
+        from griffith.analyzer.dependencies import SCAResult
+
+        fake = SCAResult(
+            osv_scanner_version="2.3.5",
+            vulnerability_count=0,
+            vulnerabilities=[],
+            scan_status="ok",
+        )
+        monkeypatch.setattr(
+            "griffith.analyzer.osv_adapter.find_osv_scanner",
+            lambda **kw: tmp_path / "fake-osv",
+        )
+        monkeypatch.setattr(
+            "griffith.analyzer.osv_adapter.run_osv_scanner",
+            lambda *a, **kw: fake,
+        )
+        result = runner.invoke(
+            main, ["analyze", str(minimal_plugin), "--sca", "--json"]
+        )
+        assert result.exit_code == 0, result.stderr
+        parsed = json.loads(result.stdout)
+        untrusted = parsed["untrusted_fields"]
+        assert "dependencies.sca.vulnerabilities[].id" in untrusted
+        assert "dependencies.sca.vulnerabilities[].severity_raw" in untrusted
+        assert "dependencies.sca.error" in untrusted
+
+    def test_sca_rich_renders_cve_section(
+        self, runner, fixtures_dir, tmp_path, monkeypatch
+    ):
+        """Rich output includes a 'CVE scan' header and finding detail."""
+        from griffith.analyzer.dependencies import SCAResult, Vulnerability
+
+        fake = SCAResult(
+            osv_scanner_version="2.3.5",
+            vulnerability_count=1,
+            vulnerabilities=[
+                Vulnerability(
+                    id="GHSA-demo",
+                    severity="high",
+                    severity_raw="7.5",
+                    summary="demo SSRF",
+                    affected_package="requests",
+                    fixed_versions=["2.31.0"],
+                )
+            ],
+            scan_status="ok",
+        )
+        monkeypatch.setattr(
+            "griffith.analyzer.osv_adapter.find_osv_scanner",
+            lambda **kw: tmp_path / "fake-osv",
+        )
+        monkeypatch.setattr(
+            "griffith.analyzer.osv_adapter.run_osv_scanner",
+            lambda *a, **kw: fake,
+        )
+        result = runner.invoke(
+            main, ["analyze", str(fixtures_dir / "deps-python-plugin"), "--sca"]
+        )
+        assert result.exit_code == 0, result.stderr
+        assert "CVE scan" in result.stdout
+        assert "GHSA-demo" in result.stdout
+        assert "requests" in result.stdout
+
+    def test_sca_failed_scan_shows_error(
+        self, runner, fixtures_dir, tmp_path, monkeypatch
+    ):
+        from griffith.analyzer.dependencies import SCAResult
+
+        fake = SCAResult(
+            osv_scanner_version="2.3.5",
+            vulnerability_count=0,
+            vulnerabilities=[],
+            error="osv-scanner exited with code 3: boom",
+            scan_status="sca_requested_and_failed",
+        )
+        monkeypatch.setattr(
+            "griffith.analyzer.osv_adapter.find_osv_scanner",
+            lambda **kw: tmp_path / "fake-osv",
+        )
+        monkeypatch.setattr(
+            "griffith.analyzer.osv_adapter.run_osv_scanner",
+            lambda *a, **kw: fake,
+        )
+        result = runner.invoke(
+            main, ["analyze", str(fixtures_dir / "deps-python-plugin"), "--sca", "--json"]
+        )
+        assert result.exit_code == 0, result.stderr
+        parsed = json.loads(result.stdout)
+        deps = parsed["dependencies"]
+        assert deps["scan_status"] == "sca_requested_and_failed"
+        assert "boom" in deps["sca"]["error"]

@@ -10,10 +10,12 @@ from rich.console import Console
 
 from griffith.analyzer import (
     ArchitectureAssessor,
+    DependencyAnalyzer,
     FootprintEstimator,
     PluginInventory,
     SecurityScanner,
 )
+from griffith.analyzer.osv_adapter import INSTALL_PITCH, OSVScannerMissingError
 from griffith.reporter import render_json, render_rich
 from griffith.schema import (
     Report,
@@ -44,7 +46,15 @@ def main():
     is_flag=True,
     help="Enable broader (noisier) security rules.",
 )
-def analyze(source: str, as_json: bool, strict: bool):
+@click.option(
+    "--sca",
+    is_flag=True,
+    help=(
+        "Run Tier 2 supply-chain analysis (requires osv-scanner on PATH). "
+        "Hard-fails with exit code 2 when osv-scanner is unavailable."
+    ),
+)
+def analyze(source: str, as_json: bool, strict: bool, sca: bool):
     """Analyze a plugin from a git URL, GitHub shorthand, or local path.
 
     SOURCE can be:
@@ -57,7 +67,15 @@ def analyze(source: str, as_json: bool, strict: bool):
     """
     try:
         with resolve(source) as (path, source_type):
-            _run_analysis(path, source, source_type, as_json=as_json, strict=strict)
+            _run_analysis(
+                path, source, source_type,
+                as_json=as_json, strict=strict, sca=sca,
+            )
+    except OSVScannerMissingError as e:
+        console_err.print(f"[bold red]--sca requested but osv-scanner not found:[/] {e}")
+        console_err.print()
+        console_err.print(INSTALL_PITCH)
+        sys.exit(2)
     except GriffithCloneError as e:
         console_err.print(f"[bold red]Clone failed:[/] {e}")
         sys.exit(1)
@@ -76,6 +94,7 @@ def _run_analysis(
     *,
     as_json: bool,
     strict: bool,
+    sca: bool,
 ) -> None:
     """Detect single-plugin vs marketplace, analyze, render."""
     marketplace_manifest = path / ".claude-plugin" / "marketplace.json"
@@ -83,7 +102,7 @@ def _run_analysis(
 
     if marketplace_manifest.exists() and plugins_dir.is_dir():
         reports = _analyze_marketplace(
-            path, plugins_dir, source, source_type, strict=strict
+            path, plugins_dir, source, source_type, strict=strict, sca=sca
         )
         mp_report = build_marketplace_report(
             reports=reports,
@@ -98,7 +117,7 @@ def _run_analysis(
         return
 
     # Single plugin path
-    report = _analyze_single(path, source, source_type, strict=strict)
+    report = _analyze_single(path, source, source_type, strict=strict, sca=sca)
     if as_json:
         render_json(report)
     else:
@@ -111,17 +130,20 @@ def _analyze_single(
     source_type: SourceType,
     *,
     strict: bool,
+    sca: bool = False,
     plugin_path_override: str | None = None,
 ) -> Report:
     inv = PluginInventory.from_path(plugin_path)
     sec_findings = SecurityScanner(strict=strict).scan(inv)
     footprint = FootprintEstimator().estimate(inv)
     architecture = ArchitectureAssessor().assess(inv)
+    dependency_report = DependencyAnalyzer().analyze(plugin_path, sca=sca)
     return build_report(
         inventory=inv,
         security_findings=sec_findings,
         footprint=footprint,
         architecture=architecture,
+        dependency_report=dependency_report,
         source=source,
         source_type=source_type,
         plugin_path_override=plugin_path_override,
@@ -135,6 +157,7 @@ def _analyze_marketplace(
     source_type: SourceType,
     *,
     strict: bool,
+    sca: bool,
 ) -> list[Report]:
     reports: list[Report] = []
     for child in sorted(plugins_dir.iterdir()):
@@ -150,6 +173,7 @@ def _analyze_marketplace(
                 source,
                 source_type,
                 strict=strict,
+                sca=sca,
                 plugin_path_override=rel_path,
             )
         )

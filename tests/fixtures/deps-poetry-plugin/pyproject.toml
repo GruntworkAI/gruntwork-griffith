@@ -1,0 +1,18 @@
+[tool.poetry]
+name = "deps-poetry"
+version = "0.0.1"
+description = "Poetry-style pyproject for Griffith parser tests"
+
+[tool.poetry.dependencies]
+python = "^3.11"
+requests = "^2.28"
+click = {version = "^8.1", extras = ["colorama"]}
+
+[tool.poetry.group.dev.dependencies]
+pytest = "^7.0"
+
+[tool.poetry.group.test.dependencies]
+pytest-cov = "^4.0"
+
+[tool.poetry.group.docs.dependencies]
+sphinx = "^7.0"

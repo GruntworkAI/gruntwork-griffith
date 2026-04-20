@@ -104,12 +104,94 @@ Consumers can disambiguate by presence of the `marketplace` key: `"marketplace" 
 | `architecture.pattern` | enum | `agent-heavy` / `skill-first` / `mcp-based` / `hybrid` |
 | `architecture.efficiency_notes[]` | array of string | Qualitative observations |
 | `architecture.recommendations[]` | array of string | Optional suggestions |
+| `dependencies.scan_status` | enum | `tier1_only` when `--sca` is not used; `ok`, `sca_requested_and_failed`, `sca_requested_and_timed_out`, `sca_malformed_output` when `--sca` is used. **Consumers MUST check `scan_status == "ok"` before treating zero CVEs as clean** — any other status means the CVE scan did not produce authoritative output. |
+| `dependencies.manifests[]` | array of object | Each: `{path, is_symlink, size_skipped}`. **`path` untrusted.** |
+| `dependencies.lockfiles[]` | array of object | Same shape as manifests. Presence recorded; contents not parsed in Tier 1. |
+| `dependencies.unscanned_manifests[]` | array of string | Paths of manifests the parser could not read (malformed, too large, etc.). **Untrusted.** |
+| `dependencies.ecosystems[]` | array of string | Sorted list of ecosystems present in `packages[]` (e.g. `["PyPI", "npm"]`). |
+| `dependencies.package_count` | int | `len(packages)`. |
+| `dependencies.packages[]` | array of object | See Package shape below. |
+| `dependencies.sca` | object or null | Tier 2 CVE result. `null` when `--sca` is not used; otherwise an SCAResult object (see shape below). |
 | `analysis_scope` | array | Always `["static"]` in v0.1. Does **not** include LLM-based skill review. |
 | `untrusted_fields[]` | array | Dotted paths of fields derived from plugin content |
 | `meta.griffith_version` | string | e.g. `"0.1.0"` |
 | `meta.griffith_hardening_version` | string | Increments when clone/analyzer hardening changes |
 | `meta.analyzed_at` | string | ISO-8601 UTC |
 | `meta.source_type` | enum | `url` / `shorthand` / `path` |
+
+### Package shape (Tier 1 dependencies)
+
+```json
+{
+  "ecosystem": "PyPI",
+  "name": "Pillow",
+  "constraint": ">=10.0.0,<11.0.0",
+  "kind": "runtime",
+  "manifest": "skills/gemini-imagegen/requirements.txt"
+}
+```
+
+| Field | Type | Notes |
+|-------|------|-------|
+| `ecosystem` | string | `"PyPI"` / `"npm"` / (future: rubygems, go, cargo). **Untrusted.** |
+| `name` | string | Package name. Extras (`[full]`) are stripped. **Untrusted.** |
+| `constraint` | string | Version spec as written (`>=1.0`, `^2.3`, empty for unpinned). **Untrusted.** |
+| `kind` | enum | `runtime` / `dev` / `optional` / `peer`. Griffith-controlled (not untrusted). |
+| `manifest` | string | Relative path to the manifest declaring this package. **Untrusted.** |
+
+Phase 1.5 Unit 5 parses Python (`requirements*.txt`, `pyproject.toml` — PEP 621 + Poetry) and Node (`package.json`). Ruby / Go / Rust manifests are **detected** (surface in `manifests[]`) but not parsed; their packages are deferred to Phase 1.6.
+
+### SCAResult shape (Tier 2 dependencies — `--sca` only)
+
+`dependencies.sca` is `null` unless `griffith analyze --sca` is used. When present, the object has this shape:
+
+```json
+{
+  "osv_scanner_version": "2.3.5",
+  "vulnerability_count": 2,
+  "vulnerabilities": [ /* Vulnerability objects — see below */ ],
+  "note": null,
+  "error": null
+}
+```
+
+| Field | Type | Notes |
+|-------|------|-------|
+| `osv_scanner_version` | string | Probed via `osv-scanner --version`. `"unknown"` if the probe fails. |
+| `vulnerability_count` | int | `len(vulnerabilities)`. |
+| `vulnerabilities[]` | array of object | See Vulnerability shape below. |
+| `note` | string or null | Griffith-authored explanation (e.g. "osv-scanner found no scannable package sources"). Trusted. |
+| `error` | string or null | Failure tail when `scan_status != "ok"`. **Untrusted** — may contain osv-scanner stderr. |
+
+**Status variants (driven by top-level `dependencies.scan_status`):**
+
+- `ok` with `vulnerability_count == 0`, `note == null`, `error == null` — clean scan.
+- `ok` with `note` set, `vulnerabilities == []` — osv-scanner returned exit 128 (no scannable sources). Common for Node plugins without a lockfile.
+- `sca_requested_and_failed` — non-zero exit from osv-scanner; `error` contains a stderr tail.
+- `sca_requested_and_timed_out` — wall-clock timeout (default 120s); `error` describes the timeout.
+- `sca_malformed_output` — exit 0 but stdout was not valid JSON. Possible tampering / version drift signal.
+
+### Vulnerability shape
+
+```json
+{
+  "id": "GHSA-xxxx-yyyy-zzzz",
+  "severity": "high",
+  "severity_raw": "7.5",
+  "summary": "requests SSRF",
+  "affected_package": "requests",
+  "fixed_versions": ["2.31.0"]
+}
+```
+
+| Field | Type | Notes |
+|-------|------|-------|
+| `id` | string | CVE / GHSA / OSV identifier. **Untrusted.** |
+| `severity` | enum | `critical` / `high` / `medium` / `low` / `info`. Griffith-controlled; derived from `severity_raw` via fail-closed CVSS mapping. Unparseable CVSS → `critical` (not `info`) so CI gates don't miss real criticals due to upstream schema drift. |
+| `severity_raw` | string | As-emitted CVSS value (numeric like `"7.5"` or vector like `"CVSS:3.1/AV:N/AC:L/…"`). **Untrusted.** |
+| `summary` | string | One-line description. **Untrusted.** |
+| `affected_package` | string | Package name as osv-scanner reported it. **Untrusted.** |
+| `fixed_versions[]` | array of string | Versions that remediate this vulnerability, drawn from the OSV `affected[].ranges[].events[].fixed` fields. **Untrusted.** |
 
 ### Finding shape
 
