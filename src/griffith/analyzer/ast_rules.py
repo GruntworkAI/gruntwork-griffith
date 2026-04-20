@@ -393,3 +393,224 @@ def _check_subprocess_shell_true(ctx: RuleContext) -> list:
                 )
                 break
     return findings
+
+
+@ast_rule(
+    id="subprocess-dynamic-command",
+    severity="high",
+    file_filter="hooks/**/*.py",
+)
+def _check_subprocess_dynamic_command(ctx: RuleContext) -> list:
+    """Fire HIGH on any subprocess call where args[0] is not provably static.
+
+    Inverted check: `is_provably_static(arg)` means "the argument is a
+    literal Constant OR a List/Tuple of literal Constants (incl. Starred
+    of literal sequences)." Anything else — bare Name, Subscript,
+    Attribute, Call, f-string, BinOp, list containing any non-Constant,
+    or zero positional args at all (implies **kwargs unpacking) — fires.
+
+    Rationale: static analysis cannot prove "safe" for runtime-constructed
+    arguments. The fallback is the conservative surface: if we can't
+    verify the arg is a literal, flag it as dynamic. Complemented by
+    the always-firing info capability finding, so no legitimate call is
+    invisible to the user.
+    """
+    findings = []
+    for node in ast.walk(ctx.tree):
+        if not isinstance(node, ast.Call):
+            continue
+        canonical = resolve_call_target(node, ctx.alias_table)
+        if canonical not in _SUBPROCESS_CALL_NAMES:
+            continue
+        # Zero positional args → args come from **kwargs; can't verify.
+        if not node.args:
+            findings.append(
+                make_finding(
+                    rule_id="subprocess-dynamic-command",
+                    severity="high",
+                    file=ctx.path,
+                    line=getattr(node, "lineno", 0),
+                    message=(
+                        "subprocess call has no positional args — "
+                        "arguments come from **kwargs unpacking; static "
+                        "analysis cannot verify they are literal. "
+                        "Heuristic signal, not proof."
+                    ),
+                )
+            )
+            continue
+        if not is_provably_static(node.args[0]):
+            findings.append(
+                make_finding(
+                    rule_id="subprocess-dynamic-command",
+                    severity="high",
+                    file=ctx.path,
+                    line=getattr(node, "lineno", 0),
+                    message=(
+                        "subprocess call's command argument is not "
+                        "provably a literal (f-string, concat, variable, "
+                        "or non-constant list). Static analysis cannot "
+                        "tell whether the input is attacker-influenced. "
+                        "Heuristic signal, not proof."
+                    ),
+                )
+            )
+    return findings
+
+
+# Subprocess call names that accept `timeout=` at construction.
+# Popen's timeout is on .wait()/.communicate() — NOT .__init__() — so
+# Popen is excluded from the no-timeout rule to avoid false positives.
+_SUBPROCESS_TIMEOUT_ACCEPTING = frozenset({
+    "subprocess.call",
+    "subprocess.run",
+    "subprocess.check_output",
+    "subprocess.check_call",
+})
+
+
+@ast_rule(
+    id="subprocess-no-timeout",
+    severity="low",
+    file_filter="hooks/**/*.py",
+)
+def _check_subprocess_no_timeout(ctx: RuleContext) -> list:
+    """Fire LOW when a subprocess call (excluding Popen) omits `timeout=`.
+
+    This is a reliability / DoS signal, not a security signal. A
+    5-second timeout on `subprocess.run(..., shell=True)` with dynamic
+    args is still exploitable within that 5-second window. Documented
+    explicitly: timeout absence is a hint about hangs, not safety.
+    """
+    findings = []
+    for node in ast.walk(ctx.tree):
+        if not isinstance(node, ast.Call):
+            continue
+        canonical = resolve_call_target(node, ctx.alias_table)
+        if canonical not in _SUBPROCESS_TIMEOUT_ACCEPTING:
+            continue
+        has_timeout = any(kw.arg == "timeout" for kw in node.keywords)
+        if not has_timeout:
+            findings.append(
+                make_finding(
+                    rule_id="subprocess-no-timeout",
+                    severity="low",
+                    file=ctx.path,
+                    line=getattr(node, "lineno", 0),
+                    message=(
+                        "subprocess call without timeout= kwarg; command "
+                        "may hang indefinitely. Reliability hint — does "
+                        "not by itself imply exploitability. Note: "
+                        "Popen's timeout lives on .wait()/.communicate() "
+                        "and is intentionally excluded from this rule."
+                    ),
+                )
+            )
+    return findings
+
+
+# ============================================================================
+# dynamic-code-exec family — info capability + medium dynamic-arg
+# ============================================================================
+
+
+_EXEC_BUILTIN_NAMES = frozenset({"exec", "eval"})
+
+
+def _is_exec_or_eval_builtin(call: ast.Call, alias_table: dict[str, str]) -> bool:
+    """True if the call is a direct invocation of the builtin exec/eval.
+
+    `self.exec(...)` / `obj.exec(...)` are attribute calls (not the
+    builtin) and don't fire. `builtins.exec(...)` resolves through the
+    alias table.
+    """
+    canonical = resolve_call_target(call, alias_table)
+    if canonical is None:
+        return False
+    # Bare builtins, or via `from builtins import exec` / `import builtins`.
+    if canonical in _EXEC_BUILTIN_NAMES:
+        return True
+    if canonical in ("builtins.exec", "builtins.eval"):
+        return True
+    return False
+
+
+@ast_rule(
+    id="dynamic-code-exec",
+    severity="info",
+    file_filter="hooks/**/*.py",
+)
+def _check_dynamic_code_exec(ctx: RuleContext) -> list:
+    """Fire INFO on any exec() or eval() call in hook code.
+
+    Capability signal — always fires regardless of whether the argument
+    is a literal string or dynamic code. Complemented by
+    `dynamic-code-exec-dynamic-arg` (medium) when the argument is not
+    a Constant, catching the `exec(compile(...))` /
+    `exec(base64.b64decode(...))` evasion patterns.
+    """
+    findings = []
+    for node in ast.walk(ctx.tree):
+        if not isinstance(node, ast.Call):
+            continue
+        if not _is_exec_or_eval_builtin(node, ctx.alias_table):
+            continue
+        findings.append(
+            make_finding(
+                rule_id="dynamic-code-exec",
+                severity="info",
+                file=ctx.path,
+                line=getattr(node, "lineno", 0),
+                message=(
+                    "Capability signal: plugin uses exec()/eval() in a "
+                    "hook. See dynamic-code-exec-dynamic-arg (medium) "
+                    "for stricter findings when the argument is not a "
+                    "literal."
+                ),
+            )
+        )
+    return findings
+
+
+@ast_rule(
+    id="dynamic-code-exec-dynamic-arg",
+    severity="medium",
+    file_filter="hooks/**/*.py",
+)
+def _check_dynamic_code_exec_dynamic_arg(ctx: RuleContext) -> list:
+    """Fire MEDIUM when exec()/eval() is called with a non-Constant arg.
+
+    Catches the common evasion patterns:
+    - `exec(compile(src, '<x>', 'exec'))`
+    - `exec(base64.b64decode(payload))`
+    - `exec(user_input)`
+
+    The info-level `dynamic-code-exec` capability finding always fires
+    too; this rule adds escalation, never silencing.
+    """
+    findings = []
+    for node in ast.walk(ctx.tree):
+        if not isinstance(node, ast.Call):
+            continue
+        if not _is_exec_or_eval_builtin(node, ctx.alias_table):
+            continue
+        # No positional args → **kwargs (unusual for exec/eval). Skip.
+        if not node.args:
+            continue
+        if not isinstance(node.args[0], ast.Constant):
+            findings.append(
+                make_finding(
+                    rule_id="dynamic-code-exec-dynamic-arg",
+                    severity="medium",
+                    file=ctx.path,
+                    line=getattr(node, "lineno", 0),
+                    message=(
+                        "exec()/eval() called with a non-literal argument "
+                        "— evasion patterns like exec(compile(...)) or "
+                        "exec(base64.b64decode(...)) pass static-text "
+                        "rules while still executing attacker-controlled "
+                        "code. Heuristic signal, not proof."
+                    ),
+                )
+            )
+    return findings
