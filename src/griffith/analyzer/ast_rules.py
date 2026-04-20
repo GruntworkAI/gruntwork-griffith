@@ -27,11 +27,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, Optional
 
+from griffith.analyzer.findings import SecurityFinding
 from griffith.analyzer.inventory import ComponentFile
-
-# Forward-reference the finding type to avoid a circular import with
-# security.py (which imports this module).
-# At runtime we import from security to construct SecurityFinding.
 
 
 # Recursion-limit guard around untrusted AST parse. Mirrors
@@ -80,13 +77,13 @@ AST_RULES: list[ASTRuleSpec] = []
 
 
 def ast_rule(
-    *, id: str, severity: str, file_filter: str
+    *, rule_id: str, severity: str, file_filter: str
 ) -> Callable[[Callable], Callable]:
     """Decorator: register an AST rule.
 
     Usage:
 
-        @ast_rule(id="subprocess-shell-true", severity="critical",
+        @ast_rule(rule_id="subprocess-shell-true", severity="critical",
                   file_filter="hooks/**/*.py")
         def check(ctx: RuleContext) -> list[SecurityFinding]:
             ...
@@ -94,12 +91,22 @@ def ast_rule(
     The decorated function stays callable; the spec is registered as a
     side effect. No class hierarchy, no inheritance — the simplest shape
     that supports multiple rules sharing one module.
+
+    Raises ValueError on duplicate rule_id registration — silent
+    double-registration (e.g., from module reload) would silently
+    double-count findings. Fail loudly instead.
     """
 
     def _register(func: Callable) -> Callable:
+        if any(spec.rule_id == rule_id for spec in AST_RULES):
+            raise ValueError(
+                f"AST rule {rule_id!r} is already registered. "
+                "Duplicate registration usually indicates a module "
+                "reload or a typo. Use a distinct rule_id."
+            )
         AST_RULES.append(
             ASTRuleSpec(
-                rule_id=id, severity=severity,
+                rule_id=rule_id, severity=severity,
                 file_filter=file_filter, check=func,
             )
         )
@@ -250,20 +257,20 @@ def is_provably_static(arg_node: ast.expr) -> bool:
 
 def run_ast_rules(
     plugin_root: Path, cf: ComponentFile
-) -> tuple[list, Optional[str]]:
+) -> tuple[list[SecurityFinding], Optional[str]]:
     """Parse a Python file and run every applicable @ast_rule against it.
 
     Returns `(findings, parse_error_message_or_None)`. The caller
     (SecurityScanner) uses the parse_error to decide finding vs meta
     entry per the plan's hook vs non-hook split.
     """
-    # Import locally to avoid a circular import at module-load time.
-    from griffith.analyzer.security import SecurityFinding
-
     # Only .py files are AST-parseable.
     if not cf.path.endswith(".py"):
         return [], None
 
+    # _matches_any_glob lives in security.py and is imported lazily here
+    # only to keep the module-load order cycle-free (security.py imports
+    # run_ast_rules from this module).
     from griffith.analyzer.security import _matches_any_glob
 
     applicable = [
@@ -317,26 +324,6 @@ def run_ast_rules(
 
 
 # ============================================================================
-# Helper: SecurityFinding constructor shim (avoids circular import)
-# ============================================================================
-
-
-def make_finding(
-    rule_id: str, severity: str, file: str, line: int, message: str
-):
-    """Build a SecurityFinding; defers import to break the cycle."""
-    from griffith.analyzer.security import SecurityFinding
-
-    return SecurityFinding(
-        rule_id=rule_id,
-        severity=severity,
-        file=file,
-        line=line,
-        message=message,
-    )
-
-
-# ============================================================================
 # Rule: subprocess-shell-true (critical)
 # First real AST rule — also the dispatch-prover per Unit 0b.
 # ============================================================================
@@ -352,7 +339,7 @@ _SUBPROCESS_CALL_NAMES = frozenset({
 
 
 @ast_rule(
-    id="subprocess-shell-true",
+    rule_id="subprocess-shell-true",
     severity="critical",
     file_filter="hooks/**/*.py",
 )
@@ -378,7 +365,7 @@ def _check_subprocess_shell_true(ctx: RuleContext) -> list:
                 and kw.value.value is True
             ):
                 findings.append(
-                    make_finding(
+                    SecurityFinding(
                         rule_id="subprocess-shell-true",
                         severity="critical",
                         file=ctx.path,
@@ -396,7 +383,7 @@ def _check_subprocess_shell_true(ctx: RuleContext) -> list:
 
 
 @ast_rule(
-    id="subprocess-dynamic-command",
+    rule_id="subprocess-dynamic-command",
     severity="high",
     file_filter="hooks/**/*.py",
 )
@@ -425,7 +412,7 @@ def _check_subprocess_dynamic_command(ctx: RuleContext) -> list:
         # Zero positional args → args come from **kwargs; can't verify.
         if not node.args:
             findings.append(
-                make_finding(
+                SecurityFinding(
                     rule_id="subprocess-dynamic-command",
                     severity="high",
                     file=ctx.path,
@@ -441,7 +428,7 @@ def _check_subprocess_dynamic_command(ctx: RuleContext) -> list:
             continue
         if not is_provably_static(node.args[0]):
             findings.append(
-                make_finding(
+                SecurityFinding(
                     rule_id="subprocess-dynamic-command",
                     severity="high",
                     file=ctx.path,
@@ -470,7 +457,7 @@ _SUBPROCESS_TIMEOUT_ACCEPTING = frozenset({
 
 
 @ast_rule(
-    id="subprocess-no-timeout",
+    rule_id="subprocess-no-timeout",
     severity="low",
     file_filter="hooks/**/*.py",
 )
@@ -492,7 +479,7 @@ def _check_subprocess_no_timeout(ctx: RuleContext) -> list:
         has_timeout = any(kw.arg == "timeout" for kw in node.keywords)
         if not has_timeout:
             findings.append(
-                make_finding(
+                SecurityFinding(
                     rule_id="subprocess-no-timeout",
                     severity="low",
                     file=ctx.path,
@@ -536,7 +523,7 @@ def _is_exec_or_eval_builtin(call: ast.Call, alias_table: dict[str, str]) -> boo
 
 
 @ast_rule(
-    id="dynamic-code-exec",
+    rule_id="dynamic-code-exec",
     severity="info",
     file_filter="hooks/**/*.py",
 )
@@ -556,7 +543,7 @@ def _check_dynamic_code_exec(ctx: RuleContext) -> list:
         if not _is_exec_or_eval_builtin(node, ctx.alias_table):
             continue
         findings.append(
-            make_finding(
+            SecurityFinding(
                 rule_id="dynamic-code-exec",
                 severity="info",
                 file=ctx.path,
@@ -573,7 +560,7 @@ def _check_dynamic_code_exec(ctx: RuleContext) -> list:
 
 
 @ast_rule(
-    id="path-traversal-dynamic-python",
+    rule_id="path-traversal-dynamic-python",
     severity="high",
     file_filter="**/*.py",
 )
@@ -605,7 +592,7 @@ def _check_path_traversal_dynamic_python(ctx: RuleContext) -> list:
             )
             if has_traversal and has_dynamic:
                 findings.append(
-                    make_finding(
+                    SecurityFinding(
                         rule_id="path-traversal-dynamic-python",
                         severity="high",
                         file=ctx.path,
@@ -636,7 +623,7 @@ def _check_path_traversal_dynamic_python(ctx: RuleContext) -> list:
             right_dynamic = not isinstance(node.right, ast.Constant)
             if (left_const and right_dynamic) or (right_const and left_dynamic):
                 findings.append(
-                    make_finding(
+                    SecurityFinding(
                         rule_id="path-traversal-dynamic-python",
                         severity="high",
                         file=ctx.path,
@@ -652,7 +639,7 @@ def _check_path_traversal_dynamic_python(ctx: RuleContext) -> list:
 
 
 @ast_rule(
-    id="dynamic-code-exec-dynamic-arg",
+    rule_id="dynamic-code-exec-dynamic-arg",
     severity="medium",
     file_filter="hooks/**/*.py",
 )
@@ -678,7 +665,7 @@ def _check_dynamic_code_exec_dynamic_arg(ctx: RuleContext) -> list:
             continue
         if not isinstance(node.args[0], ast.Constant):
             findings.append(
-                make_finding(
+                SecurityFinding(
                     rule_id="dynamic-code-exec-dynamic-arg",
                     severity="medium",
                     file=ctx.path,

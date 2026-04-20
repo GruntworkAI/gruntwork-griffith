@@ -1,6 +1,6 @@
 {
   "griffith_version": "0.1.0",
-  "generated_at": "2026-04-20T16:00:46Z",
+  "generated_at": "2026-04-20T17:32:23Z",
   "findings": [
     {
       "rule_id": "aws-credentials-reference",
@@ -91,11 +91,6 @@
       "rule_id": "path-traversal",
       "file": "hooks/path-and-git.sh",
       "line_hint": 4
-    },
-    {
-      "rule_id": "python-eval-exec",
-      "file": "hooks/dynamic-exec.py",
-      "line_hint": 5
     },
     {
       "rule_id": "skill-uses-bash",

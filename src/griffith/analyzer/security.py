@@ -28,7 +28,10 @@ from typing import ClassVar, Iterable
 import regex  # pip: regex — supports timeout=
 import yaml
 
+from griffith.analyzer.findings import SecurityFinding
 from griffith.analyzer.inventory import ComponentFile, PluginInventory
+
+__all__ = ["SecurityFinding", "SecurityScanner"]
 
 _THIS_FILE = Path(__file__).resolve()
 _PROJECT_ROOT = _THIS_FILE.parent.parent.parent.parent  # project root
@@ -39,25 +42,6 @@ _DEFAULT_MAX_LINE_BYTES = 16 * 1024
 _DEFAULT_REGEX_TIMEOUT = 1.0
 
 SEVERITY_ORDER: ClassVar = ["critical", "high", "medium", "low", "info"]
-
-
-@dataclass
-class SecurityFinding:
-    """A single security concern raised against one file.
-
-    `message` is the rule's human-readable description — safe for embedding.
-    The matched bytes are never included to prevent secret leakage.
-    """
-
-    rule_id: str
-    severity: str
-    file: str
-    line: int
-    message: str
-    # Deprecated field kept for backwards-compat with the original stub.
-    # Carries the rule's regex pattern source for debugging; NOT the matched
-    # bytes. Not embedded in the JSON report.
-    pattern: str = ""
 
 
 @dataclass

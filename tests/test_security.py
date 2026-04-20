@@ -51,9 +51,17 @@ class TestDefaultRuleFirings:
         assert hit.severity == "critical"
         assert "curl-pipe.sh" in hit.file
 
-    def test_python_eval_exec_detected(self, traps_inventory):
+    def test_python_eval_exec_detected_via_ast_rules(self, traps_inventory):
+        """Hook-path eval/exec used to fire `python-eval-exec` (critical).
+        Post-AST-refinement, the YAML rule excludes `hooks/**/*.py` to
+        avoid stacking critical + info on the same call site. Hook
+        coverage comes from the AST rules instead — info capability
+        for any call, medium for non-literal args (the real signal)."""
         findings = SecurityScanner().scan(traps_inventory)
-        assert "python-eval-exec" in _ids(findings)
+        # The fixture's hooks/dynamic-exec.py calls `eval(code)` with a
+        # non-literal argument — both AST rules fire.
+        assert "dynamic-code-exec" in _ids(findings)
+        assert "dynamic-code-exec-dynamic-arg" in _ids(findings)
 
     def test_subprocess_in_hooks_detected(self, traps_inventory):
         findings = SecurityScanner().scan(traps_inventory)

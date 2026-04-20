@@ -34,7 +34,13 @@ from griffith.analyzer.security import SecurityScanner
 def test_rule_for_templates():
     """Register a no-op AST rule with `**/*.py` filter for the duration of
     a test. Used to exercise non-hook .py file parsing paths since 0b's
-    real rules are all hook-scoped (Unit 3 adds a wider-filter rule)."""
+    real rules are all hook-scoped (Unit 3 adds a wider-filter rule).
+
+    Uses try/finally so a test raising before the yield's cleanup line
+    does not leak the rule registration into subsequent tests. Bypasses
+    the @ast_rule decorator (which guards against duplicates) by
+    appending directly to AST_RULES.
+    """
     def _noop_check(ctx):
         return []
     spec = ASTRuleSpec(
@@ -44,8 +50,10 @@ def test_rule_for_templates():
         check=_noop_check,
     )
     AST_RULES.append(spec)
-    yield
-    AST_RULES.remove(spec)
+    try:
+        yield
+    finally:
+        AST_RULES.remove(spec)
 
 
 # ============================================================================

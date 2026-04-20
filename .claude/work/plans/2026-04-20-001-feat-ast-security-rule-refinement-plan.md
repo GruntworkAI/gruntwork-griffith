@@ -654,6 +654,47 @@ Edge cases accepted as known limitations (documented in rule message): multi-lin
 | Dotted-import resolver edge case (`import a.b.c; a.b.c.func()`). | Working resolver in Design; final-form choice deferred to Unit 0b implementation. |
 | `dynamic-code-exec-dynamic-arg` at medium still can't catch `exec(getattr(obj, 'attr')(''))`. | Accepted coverage limit; the `exec()` call itself always fires info capability. Stricter variant = followup. |
 
+## Post-implementation amendments
+
+**2026-04-20 — Decision 2 partially deferred to followup.** Code review
+surfaced that the implementation shipped with two parallel registries
+(`_CompiledRule` + `self._rules` for YAML regex; `ASTRuleSpec` + module-
+level `AST_RULES` for AST) instead of the unified `Rule` dataclass + adapter
+specified in R10 and Decision 2. Dispatch is implicit via two separate
+loops in `SecurityScanner.scan()`.
+
+The two-registry shape ships working at 415 tests green. The unified
+adapter was weighed and deferred:
+
+- Refactor scope is ~150 LOC + regression risk across the hot path
+  (rule dispatch is on every scan of every file). Current behavior is
+  correct; the refactor is architectural consistency with no user-
+  visible change today.
+- Concrete benefit lands when a 3rd engine is added (JS AST parser),
+  cross-registry queries become common, or rule priority/composition
+  becomes a feature. None are on the immediate roadmap.
+- Separate follow-up keeps the refinement PR focused and reviewable;
+  the unification PR gets its own review surface.
+
+Followup filed: `.claude/work/followups/unify-rule-registry.md`.
+
+Other post-implementation adjustments (also applied before merge, not
+deferred):
+- **B2**: `python-eval-exec` now excludes `hooks/**/*.py`. AST rules
+  (`dynamic-code-exec` info + `dynamic-code-exec-dynamic-arg` medium)
+  cover hook-scope eval/exec with the additive-never-silence posture;
+  the critical YAML rule would have double-fired on static calls.
+- **B3**: `SecurityFinding` moved to `src/griffith/analyzer/findings.py`
+  to break the circular import between `security.py` and `ast_rules.py`.
+  The `make_finding` shim disappeared; AST rules construct
+  `SecurityFinding` directly. Cleaner module layering.
+- **B4**: `@ast_rule(id=...)` renamed to `@ast_rule(rule_id=...)` for
+  consistency with `SecurityFinding.rule_id` and `ASTRuleSpec.rule_id`.
+  Also added: `@ast_rule` now raises `ValueError` on duplicate
+  registration (silent double-count prevention).
+- **B5**: `test_rule_for_templates` wrapped in `try/finally` so test
+  exceptions before cleanup don't leak the rule into subsequent tests.
+
 ## Documentation / Operational Notes
 
 - `docs/json-schema.md` amended in Unit 0a (R11 + `meta.ast_parse_failures` pre-docs).

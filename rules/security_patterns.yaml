@@ -32,8 +32,14 @@ rules:
     severity: critical
     pattern: '\b(eval|exec)\s*\('
     context: "**/*.py"
-    exclude: ["**/test_*.py", "**/*_test.py"]
-    message: "Dynamic code execution (eval/exec)"
+    # Hook Python files are covered by the AST-based dynamic-code-exec
+    # rules (info capability + medium dynamic-arg) which distinguish
+    # safe `exec("literal")` from `exec(compile(...))` evasion. This
+    # rule stays as a critical regex fallback for non-hook Python
+    # (where we have no AST coverage) and continues to exclude test
+    # files (the original scope).
+    exclude: ["**/test_*.py", "**/*_test.py", "hooks/**/*.py"]
+    message: "Dynamic code execution (eval/exec). For hook Python, see dynamic-code-exec (info capability) and dynamic-code-exec-dynamic-arg (medium) for AST-based detection that distinguishes safe literal-arg calls from evasion patterns."
 
   - id: hooks-path-tampering
     severity: critical

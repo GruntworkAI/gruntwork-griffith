@@ -1,6 +1,6 @@
 {
   "griffith_version": "0.1.0",
-  "generated_at": "2026-04-20T16:00:46Z",
+  "generated_at": "2026-04-20T17:32:24Z",
   "findings": [
     {
       "rule_id": "skill-uses-bash",
