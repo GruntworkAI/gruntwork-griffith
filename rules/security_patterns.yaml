@@ -68,10 +68,10 @@ rules:
   # ---------------------------------------------------------------------------
 
   - id: subprocess-in-hooks
-    severity: high
+    severity: info
     pattern: 'subprocess\.(call|run|Popen|check_output|check_call)'
     context: "hooks/**/*"
-    message: "Shell subprocess in hook — review for injection risk"
+    message: "Capability signal: plugin uses subprocess from a hook. See subprocess-shell-true / subprocess-dynamic-command / subprocess-no-timeout for stricter context-aware findings on the same call site."
 
   - id: os-system-in-hooks
     severity: high
@@ -80,10 +80,10 @@ rules:
     message: "os.system in hook — shell command execution"
 
   - id: bash-c-inline
-    severity: high
+    severity: info
     pattern: '\b(bash|sh|zsh)\s+-c\s+'
     context: ["hooks/**/*", "**/*.sh"]
-    message: "Inline shell command via -c flag"
+    message: "Capability signal: plugin invokes a shell via -c. See bash-c-dynamic-interpolated (critical) and bash-c-dynamic-literal-dollar (medium) for stricter context-aware findings."
 
   - id: dotfile-write
     severity: high
@@ -123,11 +123,11 @@ rules:
     message: "Overly permissive file permissions (777)"
 
   - id: path-traversal
-    severity: medium
+    severity: info
     pattern: '\.\./\.\.'
     context: "**/*"
     exclude: "**/*.md"
-    message: "Path traversal pattern"
+    message: "Capability signal: '../..' substring detected. See path-traversal-dynamic-{python,js,shell} for stricter context-aware findings on this file type."
 
   - id: bidi-override-chars
     severity: medium

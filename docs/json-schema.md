@@ -118,6 +118,7 @@ Consumers can disambiguate by presence of the `marketplace` key: `"marketplace" 
 | `meta.griffith_hardening_version` | string | Increments when clone/analyzer hardening changes |
 | `meta.analyzed_at` | string | ISO-8601 UTC |
 | `meta.source_type` | enum | `url` / `shorthand` / `path` |
+| `meta.ast_parse_failures` | array of string | Relative paths of `.py` files whose AST analysis failed. **Hook-path parse failures additionally emit a `high`-severity `ast-parse-failed` finding in `security.findings[]`** — this list covers non-hook parse failures (typically generated / vendored Python that the AST rules couldn't analyze). |
 
 ### Package shape (Tier 1 dependencies)
 
@@ -279,6 +280,7 @@ Until `schema_version` reaches `1.0`:
 - **Fields may be removed** with a schema_version bump
 - **Field semantics may change** with a schema_version bump
 - **Enum values may be added** (e.g., new severity levels, new patterns)
+- **In schema_version `0.1`, the `severity` assigned to a given `rule_id` may change within the enum set without bumping `schema_version`.** Consumers SHOULD group findings by severity bucket and/or match on allow-listed `rule_id` sets; consumers SHOULD NOT hard-code a specific `(rule_id, severity)` tuple as a gate. This carve-out is a one-time v0.1 concession; future loosenings require a version bump.
 
 Consumers should treat unknown enum values and unknown fields gracefully.
 
