@@ -1,5 +1,9 @@
 # Follow-up: dependency analysis (SCA) is missing from Phase 1
 
+**Status: DONE (2026-04-19).** Phase 1.5 shipped both tiers and landed
+on main at commit `ef45914`. Kept here for posterity — this is the
+document that produced `.claude/work/plans/phase-1.5-dependency-analyzer.md`.
+
 **Surfaced during Phase 1 polish (2026-04-18).**
 
 Griffith Phase 1 scans plugin source trees for Claude-specific threats
