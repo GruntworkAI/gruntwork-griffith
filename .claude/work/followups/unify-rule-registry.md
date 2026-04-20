@@ -1,32 +1,69 @@
-# Follow-up: unify YAML regex + AST rule registries
+# Future enhancement: unify YAML regex + AST rule registries
 
-**Surfaced during code review of feat/ast-security-rule-refinement (2026-04-20).**
+**Status: DEFERRED — awaiting concrete trigger. Not scheduled.**
 
-Both architecture and coherence reviewers flagged that the shipped implementation kept two parallel registries (`_CompiledRule` + `self._rules` for YAML regex rules; `ASTRuleSpec` + module-level `AST_RULES` for AST rules) instead of the unified `Rule` dataclass + adapter specified in the plan's R10 + Decision 2. The deviation was weighed during review and deferred to this followup; see the amendment in `.claude/work/plans/2026-04-20-001-feat-ast-security-rule-refinement-plan.md` for the decision rationale.
+**Original surfacing:** code review of `feat/ast-security-rule-refinement`
+(2026-04-20). Merged predecessor: commit `5343aa7`.
 
-## Current state
+**Deferral decision:** 2026-04-20, after document-review of
+`.claude/work/plans/2026-04-20-002-refactor-unify-rule-registry-plan.md`.
 
-`src/griffith/analyzer/security.py`:
-- `_CompiledRule` dataclass (regex + context globs + exclude + severity + message + strict)
-- `SecurityScanner._rules: list[_CompiledRule]` instance registry, loaded at init from YAML
-- Regex pass iterates `self._rules` in `scan()`
+## Why deferred
 
-`src/griffith/analyzer/ast_rules.py`:
-- `ASTRuleSpec` dataclass (rule_id + severity + file_filter + check callable)
-- `AST_RULES: list[ASTRuleSpec]` module-level registry, populated at import via `@ast_rule` decorator
-- AST pass iterates `AST_RULES` in `scan()` (separate loop)
+The predecessor plan's R10 + Decision 2 specified a unified `Rule`
+dataclass + adapter pattern. The shipped implementation kept two
+parallel registries (`_CompiledRule` + `self._rules` for YAML regex;
+`ASTRuleSpec` + module-level `AST_RULES` for AST). This was weighed
+during review and accepted as shippable.
 
-Shell-regex rules live in YAML and use the `_CompiledRule` path; they're functionally identical to regex rules, distinguished only by naming (`bash-c-dynamic-*`, `path-traversal-dynamic-{js,shell}`).
+Planning a unification follow-up (v2 plan on 2026-04-20) surfaced
+that the benefits are future-conditional:
 
-## Why unify
+- "Extension surface for a 3rd engine" — no 3rd engine on the roadmap
+- "Cross-registry queries" — not a requested feature
+- "Plan fidelity" — the prior review already forgave the deviation
 
-1. **Extension surface.** A 3rd engine (e.g., JS AST via tree-sitter) arriving means a 3rd registry and a 3rd dispatch loop unless unified first.
-2. **Cross-registry queries.** Questions like "list all rules firing at high severity" or "which rules apply to `hooks/**/*.py`" currently require walking two lists with different shapes.
-3. **Consistency.** Scoping vocabularies differ (AST `file_filter: str` single glob vs YAML `context: list[str]` + `exclude: list[str]`). Unifying the registry should probably unify the scoping too.
-4. **Testability.** A single registry means a single test helper for "given rules X, Y, Z, scan fixture F and assert findings" — today the AST path and regex path need separate scaffolding.
-5. **Plan fidelity.** The plan specified it; the plan passed review specifying it. Shipping the unified shape closes that gap.
+The refactor's cost (150 LOC on the hot scan path + snapshot-gate
+regression risk + review time) is paid today against a benefit that
+may never land, or may land with a shape the current abstraction
+doesn't fit. Abstractions designed for one concrete consumer are
+usually wrong; we'd be designing for zero concrete consumers.
 
-## Proposed shape
+## What we DID ship from the v2 plan
+
+The adversarial review identified Unit 3 (extract AST parse +
+alias-table build out of `run_ast_rules` into a scanner helper) as
+standalone-valuable: a single-responsibility cleanup independent of
+the unification question. Also flagged by architecture-strategist
+M1 in the post-merge code review.
+
+**Shipped separately:** `.claude/work/plans/2026-04-20-002-refactor-extract-ast-parse-orchestration-plan.md`.
+
+## Trigger conditions to revisit
+
+Reopen this follow-up when **any** of these becomes concrete:
+
+1. **JavaScript/TypeScript AST engine lands.** `tree-sitter-javascript`
+   or equivalent, replacing the regex-based
+   `path-traversal-dynamic-js` with structural analysis. At that point
+   the 3rd engine is real, the unification has a concrete shape
+   driver, and the adapter pattern earns its keep.
+2. **Shell AST engine lands.** `tree-sitter-bash` or equivalent,
+   replacing `bash-c-dynamic-interpolated` with structural
+   parsing. Same argument.
+3. **Cross-registry query becomes a product feature.** e.g., a
+   `griffith rules --filter severity=high` CLI, a
+   `griffith rules --applying-to hooks/` lookup, or external
+   consumers (LMF wrapper, Observatory service) asking for rule
+   introspection that today requires walking two lists.
+4. **3rd YAML-authored engine-kind beyond regex/shell-regex.** e.g.,
+   structural YAML rules with path-shape detection.
+5. **Rule-metadata changes that apply to both engines diverge in
+   shape across registries.** If AST rules need tagging, scoring,
+   or ordering that YAML regex rules also need, the current
+   two-registry shape forces duplicate implementations.
+
+## Original proposal (preserved for when we revisit)
 
 ```python
 # src/griffith/analyzer/rule.py (new module)
@@ -34,44 +71,49 @@ Shell-regex rules live in YAML and use the `_CompiledRule` path; they're functio
 class Rule:
     rule_id: str
     severity: str
-    file_filter: list[str]          # context globs (list for multiple matches)
-    exclude: list[str]               # exclude globs
+    file_filter: list[str]
+    exclude: list[str]
     engine_kind: Literal["regex", "ast", "shell-regex"]
     run: Callable[[RuleContext], list[SecurityFinding]]
+    strict: bool = False
 
 RULE_REGISTRY: list[Rule] = []
 ```
 
-Adapters:
-- `Rule.from_compiled_regex(_CompiledRule) -> Rule` — wraps regex rules; `run` closes over the compiled pattern
-- `Rule.from_ast_spec(ASTRuleSpec) -> Rule` — wraps AST-registered functions; `run` builds/reuses the per-file AST tree + alias table
+Adapters: `Rule.from_compiled_regex(_CompiledRule) -> Rule` and
+`Rule.from_ast_spec(ASTRuleSpec) -> Rule`. `SecurityScanner.scan()`
+iterates the unified registry with dispatch by `engine_kind`.
 
-`SecurityScanner.scan()` iterates `RULE_REGISTRY` once per file, dispatching by `engine_kind`. Parse-once-per-file optimization for AST rules still applies via a per-file cache keyed on path.
+See v2 plan for the full design + test scenarios, preserved at
+`.claude/work/plans/archive/2026-04-20-002-refactor-unify-rule-registry-plan.md`
+once archived.
 
-## Scope
+## Known design gaps to resolve when we revisit
 
-- New module `rule.py` with `Rule` dataclass + `RULE_REGISTRY` + adapter factories
-- `SecurityScanner._rules` becomes `RULE_REGISTRY` (or a filtered view of it scoped by strict-mode)
-- `scan()` rewritten to single-loop-with-dispatch
-- AST rule orchestration (parse, alias table) moves to a scanner helper method so `run_ast_rules` isn't both rule runner and orchestrator (architecture review's M1 from the code review also points at this)
-- Unify YAML `context`/`exclude` and AST `file_filter`; widen AST to accept a list + optional exclude
+These surfaced during the v2 plan's document-review and remain
+unresolved — they should shape the design when the trigger lands:
 
-## Non-scope
-
-- No new rules
-- No severity changes
-- No schema changes (the external contract stays identical — consumers see the same `SecurityFinding` shape)
-
-## Risks
-
-- Refactor touches the hot scan path. Test suite is green at 415; a regression in rule dispatch could silently drop findings or produce duplicates. Mitigation: snapshot-based integration tests (shipped in Unit 4) catch behavioral drift before merge.
-- Potential circular-import re-emergence if the new `rule.py` depends on both `security.py` and `ast_rules.py`. Mitigation: `rule.py` depends on nothing scanner-specific; both consumers import FROM it.
-
-## Estimated effort
-
-~150 LOC net + regression iteration. Plan's Option A estimated 2-3 hours focused work; this remains accurate.
+- **Shell-regex classification.** Today distinguishable only by
+  rule-ID prefix (`bash-c-dynamic-`, `path-traversal-dynamic-{js,shell}`).
+  Encoding engine identity in the registry makes prefixes
+  load-bearing. At revisit time, pick: (a) optional `engine:` YAML
+  key, (b) explicit allowlist in `rule.py`, or (c) reclassify these
+  as plain regex rules and drop the shell-regex distinction.
+- **Strict-mode timing.** Current `_load_rules(path, strict)` filters
+  at load time — with a module-level registry, the first scanner's
+  strict flag determines which rules ever populate. Resolution:
+  always load every rule; filter at iteration. Cross-scanner
+  pollution trap must be explicitly handled.
+- **`RuleContext` shape.** Regex needs `content` + `path`; AST needs
+  `tree` + `path` + `alias_table`; shell-regex currently reuses the
+  regex shape. Single dataclass with optional fields vs TypeAlias
+  union is undecided.
+- **`_CompiledRule` and `ASTRuleSpec` retirement.** Plan-time decision,
+  not implementation-time. Deferred in the v2 plan; resolve at revisit.
 
 ## Related
 
-- Origin plan: `.claude/work/plans/2026-04-20-001-feat-ast-security-rule-refinement-plan.md`
-- Code review findings (2026-04-20): architecture-strategist M1 + M4; coherence reviewer blocker section; kieran H3
+- **Origin predecessor plan:** `.claude/work/plans/2026-04-20-001-feat-ast-security-rule-refinement-plan.md`
+- **Code review findings (2026-04-20):** architecture-strategist M1 + M4; coherence reviewer blocker section; kieran H3
+- **v2 plan + its document review:** see plan file for review outputs
+- **Standalone Unit 3 work:** `.claude/work/plans/2026-04-20-002-refactor-extract-ast-parse-orchestration-plan.md`
