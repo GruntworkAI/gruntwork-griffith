@@ -1,0 +1,146 @@
+{
+  "griffith_version": "0.1.0",
+  "generated_at": "2026-04-20T16:00:46Z",
+  "findings": [
+    {
+      "rule_id": "aws-credentials-reference",
+      "file": "hooks/ssh-aws.sh",
+      "line_hint": 4
+    },
+    {
+      "rule_id": "bash-c-inline",
+      "file": "hooks/shell-tricks.sh",
+      "line_hint": 2
+    },
+    {
+      "rule_id": "bash-c-inline",
+      "file": "hooks/shell-tricks.sh",
+      "line_hint": 3
+    },
+    {
+      "rule_id": "bidi-override-chars",
+      "file": "skills/bidi-skill/SKILL.md",
+      "line_hint": 6
+    },
+    {
+      "rule_id": "chmod-777",
+      "file": "hooks/shell-tricks.sh",
+      "line_hint": 6
+    },
+    {
+      "rule_id": "claude-settings-write",
+      "file": "hooks/claude-config.sh",
+      "line_hint": 3
+    },
+    {
+      "rule_id": "curl-pipe-shell",
+      "file": "hooks/curl-pipe.sh",
+      "line_hint": 3
+    },
+    {
+      "rule_id": "dotfile-write",
+      "file": "hooks/persistence.sh",
+      "line_hint": 3
+    },
+    {
+      "rule_id": "dynamic-code-exec",
+      "file": "hooks/dynamic-exec.py",
+      "line_hint": 5
+    },
+    {
+      "rule_id": "dynamic-code-exec-dynamic-arg",
+      "file": "hooks/dynamic-exec.py",
+      "line_hint": 5
+    },
+    {
+      "rule_id": "hook-requires-gh-cli",
+      "file": "hooks/gh-usage.sh",
+      "line_hint": 2
+    },
+    {
+      "rule_id": "hook-requires-gh-cli",
+      "file": "hooks/gh-usage.sh",
+      "line_hint": 3
+    },
+    {
+      "rule_id": "hooks-path-tampering",
+      "file": "hooks/path-and-git.sh",
+      "line_hint": 3
+    },
+    {
+      "rule_id": "launch-agent-write",
+      "file": "hooks/persistence.sh",
+      "line_hint": 4
+    },
+    {
+      "rule_id": "network-egress-shell",
+      "file": "hooks/shell-tricks.sh",
+      "line_hint": 5
+    },
+    {
+      "rule_id": "osascript-exec",
+      "file": "hooks/shell-tricks.sh",
+      "line_hint": 2
+    },
+    {
+      "rule_id": "osascript-exec",
+      "file": "hooks/shell-tricks.sh",
+      "line_hint": 4
+    },
+    {
+      "rule_id": "path-traversal",
+      "file": "hooks/path-and-git.sh",
+      "line_hint": 4
+    },
+    {
+      "rule_id": "python-eval-exec",
+      "file": "hooks/dynamic-exec.py",
+      "line_hint": 5
+    },
+    {
+      "rule_id": "skill-uses-bash",
+      "file": "skills/bash-skill/SKILL.md",
+      "line_hint": 8
+    },
+    {
+      "rule_id": "skill-uses-webfetch",
+      "file": "skills/webfetch-skill/SKILL.md",
+      "line_hint": 3
+    },
+    {
+      "rule_id": "skill-uses-webfetch",
+      "file": "skills/webfetch-skill/SKILL.md",
+      "line_hint": 6
+    },
+    {
+      "rule_id": "skill-uses-webfetch",
+      "file": "skills/webfetch-skill/SKILL.md",
+      "line_hint": 8
+    },
+    {
+      "rule_id": "ssh-key-reference",
+      "file": "hooks/ssh-aws.sh",
+      "line_hint": 3
+    },
+    {
+      "rule_id": "subprocess-dynamic-command",
+      "file": "hooks/dynamic-exec.py",
+      "line_hint": 8
+    },
+    {
+      "rule_id": "subprocess-in-hooks",
+      "file": "hooks/dynamic-exec.py",
+      "line_hint": 8
+    },
+    {
+      "rule_id": "subprocess-no-timeout",
+      "file": "hooks/dynamic-exec.py",
+      "line_hint": 8
+    },
+    {
+      "rule_id": "subprocess-shell-true",
+      "file": "hooks/dynamic-exec.py",
+      "line_hint": 8
+    }
+  ]
+}

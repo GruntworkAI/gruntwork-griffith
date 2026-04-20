@@ -1,0 +1,66 @@
+{
+  "griffith_version": "0.1.0",
+  "generated_at": "2026-04-20T16:00:46Z",
+  "findings": [
+    {
+      "rule_id": "hook-requires-gh-cli",
+      "file": "hooks/scripts/session_start.py",
+      "line_hint": 277
+    },
+    {
+      "rule_id": "hook-requires-gh-cli",
+      "file": "hooks/scripts/session_start.py",
+      "line_hint": 301
+    },
+    {
+      "rule_id": "subprocess-dynamic-command",
+      "file": "hooks/scripts/run.py",
+      "line_hint": 31
+    },
+    {
+      "rule_id": "subprocess-dynamic-command",
+      "file": "hooks/scripts/run.py",
+      "line_hint": 68
+    },
+    {
+      "rule_id": "subprocess-in-hooks",
+      "file": "hooks/scripts/run.py",
+      "line_hint": 31
+    },
+    {
+      "rule_id": "subprocess-in-hooks",
+      "file": "hooks/scripts/run.py",
+      "line_hint": 68
+    },
+    {
+      "rule_id": "subprocess-in-hooks",
+      "file": "hooks/scripts/session_start.py",
+      "line_hint": 49
+    },
+    {
+      "rule_id": "subprocess-in-hooks",
+      "file": "hooks/scripts/session_start.py",
+      "line_hint": 58
+    },
+    {
+      "rule_id": "subprocess-in-hooks",
+      "file": "hooks/scripts/session_start.py",
+      "line_hint": 280
+    },
+    {
+      "rule_id": "subprocess-in-hooks",
+      "file": "hooks/scripts/session_start.py",
+      "line_hint": 289
+    },
+    {
+      "rule_id": "subprocess-in-hooks",
+      "file": "hooks/scripts/stop_hook.py",
+      "line_hint": 28
+    },
+    {
+      "rule_id": "subprocess-in-hooks",
+      "file": "hooks/scripts/stop_hook.py",
+      "line_hint": 38
+    }
+  ]
+}

@@ -1,5 +1,18 @@
 # Follow-up: refine `subprocess-in-hooks` rule to distinguish safe from risky
 
+**Status: DONE (2026-04-20).** Shipped across 5 implementation units
+(0a, 0b, 1, 2, 3, 4) on feat/ast-security-rule-refinement. Scope
+expanded during planning to cover path-traversal and bash-c-inline
+refinement — same additive-never-silence design posture applied
+uniformly. Real-plugin snapshot gates:
+- lastmilefirst 0.14.0: 8 info + 2 high (down from 8 high — the
+  high findings are real actionable signals on dynamic args in the
+  python-discovery fallback).
+- compound-engineering 2.67.0: 2 info (unchanged; CE has no
+  subprocess in hooks to begin with).
+Plan:
+.claude/work/plans/2026-04-20-001-feat-ast-security-rule-refinement-plan.md
+
 **Surfaced during Unit 4 scan of lastmilefirst 0.14.0 (2026-04-17).**
 
 ## The problem

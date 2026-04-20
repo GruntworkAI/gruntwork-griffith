@@ -1,0 +1,16 @@
+{
+  "griffith_version": "0.1.0",
+  "generated_at": "2026-04-20T16:00:46Z",
+  "findings": [
+    {
+      "rule_id": "skill-uses-bash",
+      "file": "skills/resolve-pr-feedback/SKILL.md",
+      "line_hint": 5
+    },
+    {
+      "rule_id": "skill-uses-webfetch",
+      "file": "skills/proof/SKILL.md",
+      "line_hint": 8
+    }
+  ]
+}
