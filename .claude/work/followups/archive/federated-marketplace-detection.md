@@ -1,5 +1,11 @@
 # Follow-up: federated marketplaces aren't detected
 
+**Status: DONE (2026-04-20).** Shipped on main at commit `c2439ce`.
+Real-world verification against `obra/superpowers-marketplace`: 10
+plugins surfaced (previously 0), source fields show
+`outer → inner_url` per Decision #1, clone failures error out whole
+scan (Decision #2), mixed fixture verifies Decision #3.
+
 **Surfaced during audit-plugin wrapper smoke testing (2026-04-19).**
 
 Griffith currently detects marketplace shape by requiring both a
