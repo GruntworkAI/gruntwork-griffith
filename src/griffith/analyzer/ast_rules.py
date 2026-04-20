@@ -72,6 +72,22 @@ class ASTRuleSpec:
     check: Callable[["RuleContext"], list]
 
 
+@dataclass
+class ParsedFile:
+    """Result of parsing a single .py file.
+
+    Produced by the scanner's `_build_parsed_file` helper; consumed by
+    `run_ast_rules`. The split separates "per-file orchestration"
+    (parse + alias-table + recursion-limit guard) from "rule dispatch"
+    (match applicable rules against the parsed tree) — the two
+    responsibilities used to live together in `run_ast_rules`.
+    """
+
+    path: str                            # relative, forward-slash
+    tree: ast.Module
+    alias_table: dict[str, str]
+
+
 # Module-level registry. Decorator populates at import.
 AST_RULES: list[ASTRuleSpec] = []
 
@@ -255,61 +271,27 @@ def is_provably_static(arg_node: ast.expr) -> bool:
 # ============================================================================
 
 
-def run_ast_rules(
-    plugin_root: Path, cf: ComponentFile
-) -> tuple[list[SecurityFinding], Optional[str]]:
-    """Parse a Python file and run every applicable @ast_rule against it.
+def run_ast_rules(parsed: ParsedFile) -> list[SecurityFinding]:
+    """Dispatch applicable @ast_rules against a ParsedFile.
 
-    Returns `(findings, parse_error_message_or_None)`. The caller
-    (SecurityScanner) uses the parse_error to decide finding vs meta
-    entry per the plan's hook vs non-hook split.
+    The scanner produces `ParsedFile` once per .py file (see
+    `SecurityScanner._build_parsed_file`) and hands it here for rule
+    dispatch. Before this split, `run_ast_rules` did BOTH the parsing
+    and the dispatch — architecture review flagged that as a
+    single-responsibility violation.
     """
-    # Only .py files are AST-parseable.
-    if not cf.path.endswith(".py"):
-        return [], None
-
     # _matches_any_glob lives in security.py and is imported lazily here
-    # only to keep the module-load order cycle-free (security.py imports
-    # run_ast_rules from this module).
+    # only to keep the module-load order cycle-free.
     from griffith.analyzer.security import _matches_any_glob
 
     applicable = [
         spec for spec in AST_RULES
-        if _matches_any_glob(cf.path, [spec.file_filter])
+        if _matches_any_glob(parsed.path, [spec.file_filter])
     ]
 
-    # Hook-path .py files: always attempt parse (parse failure in
-    # executable hook code is itself a security signal — the
-    # `ast-parse-failed` finding fires even if no rule would have run).
-    # Non-hook .py files: skip the parse when no rule applies; there's
-    # no work to do and no signal to surface.
-    is_hook_path = cf.path.startswith(_HOOK_PATH_PREFIX)
-    if not applicable and not is_hook_path:
-        return [], None
-
-    full = plugin_root / cf.path
-    original_limit = sys.getrecursionlimit()
-    try:
-        sys.setrecursionlimit(_PARSE_RECURSION_LIMIT)
-        try:
-            source = full.read_text(encoding="utf-8", errors="replace")
-        except OSError as e:
-            return [], f"OSError reading {cf.path}: {e}"
-        try:
-            tree = ast.parse(source, filename=cf.path)
-        except (SyntaxError, ValueError, RecursionError) as e:
-            return [], f"Parse error in {cf.path}: {type(e).__name__}: {e}"
-    finally:
-        sys.setrecursionlimit(original_limit)
-
-    # Build alias table once per file; hand to every rule.
-    try:
-        alias_table = build_alias_table(tree)
-    except RecursionError:
-        # ast.walk can blow the stack on a deeply-nested tree that parsed OK.
-        return [], f"Walk error in {cf.path}: RecursionError during alias-table build"
-
-    ctx = RuleContext(tree=tree, path=cf.path, alias_table=alias_table)
+    ctx = RuleContext(
+        tree=parsed.tree, path=parsed.path, alias_table=parsed.alias_table
+    )
 
     findings: list[SecurityFinding] = []
     for spec in applicable:
@@ -320,7 +302,7 @@ def run_ast_rules(
             # Don't let one rule's failure taint others; continue.
             continue
         findings.extend(rule_findings)
-    return findings, None
+    return findings
 
 
 # ============================================================================

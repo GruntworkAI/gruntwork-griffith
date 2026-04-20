@@ -257,15 +257,41 @@ class SecurityScanner:
         # hook-path failures emit `ast-parse-failed` findings (high);
         # non-hook failures accumulate in self._ast_parse_failures for
         # `meta.ast_parse_failures`.
-        from griffith.analyzer.ast_rules import run_ast_rules
+        #
+        # Orchestration split (2026-04-20): `_build_parsed_file` owns
+        # "parse + alias-table build" as a scanner-level concern.
+        # `run_ast_rules` is now a pure dispatcher that takes the
+        # ParsedFile and runs applicable @ast_rule checks.
+        #
+        # Applicability pre-filter: predecessor's `run_ast_rules`
+        # short-circuited on `not applicable and not is_hook_path`.
+        # We preserve that here (before calling the helper) so we
+        # don't grow `meta.ast_parse_failures` for non-hook .py files
+        # that nothing would have inspected anyway.
+        from griffith.analyzer.ast_rules import AST_RULES, run_ast_rules
 
         for cf in _all_components(inventory):
             if cf.is_symlink or cf.size_skipped:
                 continue
-            ast_findings, parse_err = run_ast_rules(inventory.path, cf)
-            findings.extend(ast_findings)
+            if not cf.path.endswith(".py"):
+                continue
+
+            is_hook_path = cf.path.startswith("hooks/")
+            has_applicable_rule = any(
+                _matches_any_glob(cf.path, [spec.file_filter])
+                for spec in AST_RULES
+            )
+            if not is_hook_path and not has_applicable_rule:
+                # Non-hook .py with no rule that would apply. Skip the
+                # parse entirely — matches predecessor semantics; no
+                # meta-failure growth possible.
+                continue
+
+            parsed, parse_err = self._build_parsed_file(inventory.path, cf)
+            if parsed is not None:
+                findings.extend(run_ast_rules(parsed))
             if parse_err is not None:
-                if cf.path.startswith("hooks/"):
+                if is_hook_path:
                     findings.append(
                         SecurityFinding(
                             rule_id="ast-parse-failed",
@@ -364,6 +390,74 @@ class SecurityScanner:
                         )
                     )
         return results
+
+    def _build_parsed_file(
+        self, plugin_root: Path, cf: ComponentFile
+    ) -> "tuple[ParsedFile | None, str | None]":
+        """Parse a single .py file and build its alias table.
+
+        Returns `(ParsedFile, None)` on success or `(None, error_str)` on
+        any parse-time failure. The two-stage exception contract is:
+          1. Inside the `try/finally` that lowers
+             `sys.setrecursionlimit` to `_PARSE_RECURSION_LIMIT`:
+             - OSError on read → `(None, "OSError reading ...")`
+             - SyntaxError / ValueError / RecursionError during
+               `ast.parse` → `(None, "Parse error ...")`
+          2. After the recursion limit is restored:
+             - RecursionError during `build_alias_table` → `(None,
+               "Walk error ...")`
+
+        Non-.py files short-circuit with `(None, None)` — neither a
+        parse nor an error; the caller skips them silently.
+
+        Ownership rationale (lives on SecurityScanner, not ast_rules):
+          - Parse + alias-table build is per-file orchestration.
+          - Rule dispatch (`run_ast_rules`) is per-rule orchestration.
+          - The scanner owns the split — it knows the plugin root and
+            controls iteration order over components.
+        """
+        from griffith.analyzer.ast_rules import (
+            ParsedFile,
+            _PARSE_RECURSION_LIMIT,
+            build_alias_table,
+        )
+        import ast as _ast
+        import sys as _sys
+
+        if not cf.path.endswith(".py"):
+            return None, None
+
+        full = plugin_root / cf.path
+        original_limit = _sys.getrecursionlimit()
+        tree: "_ast.Module | None" = None
+        try:
+            _sys.setrecursionlimit(_PARSE_RECURSION_LIMIT)
+            try:
+                source = full.read_text(encoding="utf-8", errors="replace")
+            except OSError as e:
+                return None, f"OSError reading {cf.path}: {e}"
+            try:
+                tree = _ast.parse(source, filename=cf.path)
+            except (SyntaxError, ValueError, RecursionError) as e:
+                return None, (
+                    f"Parse error in {cf.path}: {type(e).__name__}: {e}"
+                )
+        finally:
+            _sys.setrecursionlimit(original_limit)
+
+        # Second stage: alias-table build under the original recursion
+        # limit. A deeply-nested-but-parseable tree can still exhaust
+        # the stack during ast.walk; catch separately so the scanner
+        # sees a clean error string instead of an uncaught exception.
+        try:
+            alias_table = build_alias_table(tree)
+        except RecursionError:
+            return None, (
+                f"Walk error in {cf.path}: "
+                "RecursionError during alias-table build"
+            )
+
+        return ParsedFile(path=cf.path, tree=tree, alias_table=alias_table), None
 
 
 def _all_components(inventory: PluginInventory) -> Iterable[ComponentFile]:

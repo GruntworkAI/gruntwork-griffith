@@ -294,6 +294,31 @@ class TestParseFailureHandling:
         assert not any(f.rule_id == "ast-parse-failed" for f in findings)
         assert scanner.ast_parse_failures == []
 
+    def test_hook_parse_failure_with_no_applicable_rules(
+        self, tmp_plugin: Path, monkeypatch
+    ):
+        """Pins the 'hook-path always-parse' invariant against the
+        'zero applicable rules' axis.
+
+        Today, `path-traversal-dynamic-python` has `file_filter="**/*.py"`
+        so it always matches any hook .py — masking the test of whether
+        the scanner parses hook files even when no rule applies. If a
+        future edit narrows that filter (e.g., to exclude hook-paths),
+        this test ensures `ast-parse-failed` still fires on malformed
+        hook Python. Temporarily empties AST_RULES to isolate the
+        'no-rule-applies' axis.
+        """
+        import griffith.analyzer.ast_rules as ast_rules_module
+        monkeypatch.setattr(ast_rules_module, "AST_RULES", [])
+
+        (tmp_plugin / "hooks" / "bad.py").write_text("def broken(: nope")
+        inv = PluginInventory.from_path(tmp_plugin)
+        findings = SecurityScanner().scan(inv)
+        parse_failed = [f for f in findings if f.rule_id == "ast-parse-failed"]
+        assert len(parse_failed) == 1
+        assert parse_failed[0].severity == "high"
+        assert parse_failed[0].file.startswith("hooks/")
+
 
 # ============================================================================
 # subprocess-shell-true — first real AST rule, proves dispatch
