@@ -150,6 +150,23 @@ rules:
     exclude: "**/*.md"
     message: "Capability signal: '../..' substring detected. See path-traversal-dynamic-{python,js,shell} for stricter context-aware findings on this file type."
 
+  # path-traversal-dynamic-js: '../' in a string context where
+  # interpolation or runtime identifier concatenation is present.
+  # Covers template literals `${...}` and string-concat `"../" + ident`.
+  # Rejects pure-static template literals and pure-constant strings.
+  - id: path-traversal-dynamic-js
+    severity: high
+    pattern: '\.\./(?:[^"''`]*?\$\{|[^"''`]*?\$[A-Za-z_])|"(?:[^"\\]|\\.)*?\.\./[^"]*"\s*\+\s*[A-Za-z_]|''[^'']*?\.\./[^'']*''\s*\+\s*[A-Za-z_]'
+    context: ["**/*.js", "**/*.ts"]
+    message: "JavaScript/TypeScript: '../' composed with a runtime value (template literal interpolation or string concat) — potential path traversal with attacker-influenced segment."
+
+  # path-traversal-dynamic-shell: '../' adjacent to $VAR / ${...} / $(...).
+  - id: path-traversal-dynamic-shell
+    severity: high
+    pattern: '\.\./(?:[^\s$]*)?(?:\$[A-Za-z_]|\$\{|\$\()'
+    context: "**/*.sh"
+    message: "Shell: '../' adjacent to a variable / command substitution — potential path traversal with attacker-influenced segment."
+
   - id: bidi-override-chars
     severity: medium
     pattern: '[\u202A-\u202E\u2066-\u2069]'

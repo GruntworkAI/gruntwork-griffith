@@ -573,6 +573,85 @@ def _check_dynamic_code_exec(ctx: RuleContext) -> list:
 
 
 @ast_rule(
+    id="path-traversal-dynamic-python",
+    severity="high",
+    file_filter="**/*.py",
+)
+def _check_path_traversal_dynamic_python(ctx: RuleContext) -> list:
+    """Fire HIGH on Python code where `../` is composed with a runtime value.
+
+    Two patterns caught:
+      1. f-string where any Constant part contains `../` AND at least
+         one FormattedValue exists.
+      2. BinOp `+` where one operand is a Constant string containing
+         `../` and the other operand is non-Constant.
+
+    Pure-constant path strings (`open("../../etc/passwd")`) do NOT fire —
+    those emit the info-level capability signal via the YAML regex only.
+    """
+    findings = []
+    for node in ast.walk(ctx.tree):
+        # Pattern 1: f-string (JoinedStr) with `../` in a Constant part
+        # and at least one dynamic FormattedValue.
+        if isinstance(node, ast.JoinedStr):
+            has_traversal = any(
+                isinstance(v, ast.Constant)
+                and isinstance(v.value, str)
+                and "../" in v.value
+                for v in node.values
+            )
+            has_dynamic = any(
+                isinstance(v, ast.FormattedValue) for v in node.values
+            )
+            if has_traversal and has_dynamic:
+                findings.append(
+                    make_finding(
+                        rule_id="path-traversal-dynamic-python",
+                        severity="high",
+                        file=ctx.path,
+                        line=getattr(node, "lineno", 0),
+                        message=(
+                            "f-string contains '../' composed with a "
+                            "runtime value — potential path traversal "
+                            "with attacker-influenced segment."
+                        ),
+                    )
+                )
+                continue
+
+        # Pattern 2: BinOp + where one side is constant `../` and the
+        # other is non-Constant.
+        if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
+            left_const = (
+                isinstance(node.left, ast.Constant)
+                and isinstance(node.left.value, str)
+                and "../" in node.left.value
+            )
+            right_const = (
+                isinstance(node.right, ast.Constant)
+                and isinstance(node.right.value, str)
+                and "../" in node.right.value
+            )
+            left_dynamic = not isinstance(node.left, ast.Constant)
+            right_dynamic = not isinstance(node.right, ast.Constant)
+            if (left_const and right_dynamic) or (right_const and left_dynamic):
+                findings.append(
+                    make_finding(
+                        rule_id="path-traversal-dynamic-python",
+                        severity="high",
+                        file=ctx.path,
+                        line=getattr(node, "lineno", 0),
+                        message=(
+                            "String concatenation combines '../' with a "
+                            "runtime value — potential path traversal "
+                            "with attacker-influenced segment."
+                        ),
+                    )
+                )
+    return findings
+
+
+@ast_rule(
     id="dynamic-code-exec-dynamic-arg",
     severity="medium",
     file_filter="hooks/**/*.py",
