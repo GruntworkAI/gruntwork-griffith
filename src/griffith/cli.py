@@ -143,7 +143,8 @@ def _analyze_single(
     plugin_path_override: str | None = None,
 ) -> Report:
     inv = PluginInventory.from_path(plugin_path)
-    sec_findings = SecurityScanner(strict=strict).scan(inv)
+    scanner = SecurityScanner(strict=strict)
+    sec_findings = scanner.scan(inv)
     footprint = FootprintEstimator().estimate(inv)
     architecture = ArchitectureAssessor().assess(inv)
     dependency_report = DependencyAnalyzer().analyze(plugin_path, sca=sca)
@@ -156,6 +157,7 @@ def _analyze_single(
         source=source,
         source_type=source_type,
         plugin_path_override=plugin_path_override,
+        ast_parse_failures=scanner.ast_parse_failures,
     )
 
 
