@@ -1,0 +1,19 @@
+{
+  "name": "federated-marketplace",
+  "plugins": [
+    {
+      "name": "federated-alpha",
+      "source": {
+        "source": "url",
+        "url": "https://example.invalid/external-a.git"
+      }
+    },
+    {
+      "name": "federated-beta",
+      "source": {
+        "source": "path",
+        "path": "./external-b"
+      }
+    }
+  ]
+}

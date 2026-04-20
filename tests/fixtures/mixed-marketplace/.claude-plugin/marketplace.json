@@ -1,0 +1,16 @@
+{
+  "name": "mixed-marketplace",
+  "plugins": [
+    {
+      "name": "bundled-one",
+      "source": "./plugins/bundled-one"
+    },
+    {
+      "name": "federated-c",
+      "source": {
+        "source": "path",
+        "path": "./external-c"
+      }
+    }
+  ]
+}

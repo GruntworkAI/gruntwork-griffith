@@ -107,6 +107,131 @@ class TestStubCommands:
         assert "not yet implemented" in result.stderr.lower()
 
 
+@pytest.fixture
+def stub_federated_url_resolve(monkeypatch, fixtures_dir):
+    """Map the federated-marketplace fixture's URL entry to a local path.
+
+    The fixture uses `https://example.invalid/external-a.git` for its
+    URL-type entry; this stub lets the tests exercise the URL code
+    path without leaving the repo.
+    """
+    import griffith.cli as cli_mod
+    from contextlib import contextmanager
+
+    real_resolve = cli_mod.resolve
+    external_a = (fixtures_dir / "federated-marketplace" / "external-a").resolve()
+
+    @contextmanager
+    def _fake_resolve(src):
+        if src == "https://example.invalid/external-a.git":
+            yield external_a, "url"
+        else:
+            with real_resolve(src) as result:
+                yield result
+
+    monkeypatch.setattr(cli_mod, "resolve", _fake_resolve)
+
+
+class TestAnalyzeFederatedMarketplace:
+    """Federated marketplaces — marketplace.json lists plugins with URL
+    or path-object sources, rather than bundling them under plugins/.
+
+    The federated-marketplace fixture uses one URL-type entry + one
+    path-type entry. The URL entry is stubbed to a local fixture so
+    tests stay hermetic without losing code-path coverage.
+    """
+
+    def test_federated_marketplace_detected_without_plugins_dir(
+        self, runner, fixtures_dir, stub_federated_url_resolve,
+    ):
+        """Regression from superpowers-marketplace: a marketplace.json
+        with NO bundled plugins/ dir must still be treated as a
+        marketplace, not fall through to single-plugin mode."""
+        mp = str(fixtures_dir / "federated-marketplace")
+        result = runner.invoke(main, ["analyze", mp, "--json"])
+        assert result.exit_code == 0, result.stderr
+        parsed = json.loads(result.stdout)
+        assert "reports" in parsed, "expected MarketplaceReport shape"
+        assert parsed["summary"]["plugin_count"] == 2
+
+    def test_federated_plugin_names_extracted(
+        self, runner, fixtures_dir, stub_federated_url_resolve,
+    ):
+        mp = str(fixtures_dir / "federated-marketplace")
+        result = runner.invoke(main, ["analyze", mp, "--json"])
+        parsed = json.loads(result.stdout)
+        names = {r["plugin"]["name"] for r in parsed["reports"]}
+        assert names == {"federated-alpha", "federated-beta"}
+
+    def test_federated_source_field_concatenated(
+        self, runner, fixtures_dir, stub_federated_url_resolve,
+    ):
+        """Decision #1: plugin.source for federated entries concatenates
+        the outer marketplace source with the inner plugin source,
+        separated by ` → `."""
+        mp = str(fixtures_dir / "federated-marketplace")
+        result = runner.invoke(main, ["analyze", mp, "--json"])
+        parsed = json.loads(result.stdout)
+        sources = {r["plugin"]["name"]: r["plugin"]["source"] for r in parsed["reports"]}
+        # URL-type federated entry
+        assert " → " in sources["federated-alpha"]
+        assert "https://example.invalid/external-a.git" in sources["federated-alpha"]
+        # Path-type federated entry — the inner ref is included after " → ".
+        assert " → " in sources["federated-beta"]
+
+    def test_mixed_marketplace_supported(self, runner, fixtures_dir):
+        """Decision #3: a marketplace can mix bundled (./plugins/x) and
+        federated (source-object) entries. Both resolve correctly."""
+        mp = str(fixtures_dir / "mixed-marketplace")
+        result = runner.invoke(main, ["analyze", mp, "--json"])
+        assert result.exit_code == 0, result.stderr
+        parsed = json.loads(result.stdout)
+        names = {r["plugin"]["name"] for r in parsed["reports"]}
+        assert names == {"bundled-one", "federated-c"}
+
+    def test_federated_clone_failure_aborts_scan(self, runner, fixtures_dir, monkeypatch):
+        """Decision #2: a per-plugin clone failure propagates as a whole-
+        scan error (exit 1). Assumption: clone failures are rare and
+        typically transient; user reruns rather than consuming a partial
+        report."""
+        from griffith.sources import GriffithCloneError
+        import griffith.cli as cli_mod
+
+        real_resolve = cli_mod.resolve
+
+        from contextlib import contextmanager
+
+        @contextmanager
+        def _fake_resolve(src):
+            if src.startswith("https://"):
+                raise GriffithCloneError(f"simulated clone failure for {src}")
+            with real_resolve(src) as result:
+                yield result
+
+        monkeypatch.setattr(cli_mod, "resolve", _fake_resolve)
+
+        mp = str(fixtures_dir / "federated-marketplace")
+        result = runner.invoke(main, ["analyze", mp, "--json"])
+        # Whole scan errors out (exit 1).
+        assert result.exit_code == 1
+        assert "clone failed" in result.stderr.lower() or "simulated" in result.stderr.lower()
+
+    def test_existing_bundled_marketplace_unchanged(self, runner, fixtures_dir):
+        """Regression: bundled-only marketplaces (the pre-federated path)
+        behave identically. Source is the outer marketplace string; path
+        is plugins/<name>."""
+        mp = str(fixtures_dir / "minimal-marketplace")
+        result = runner.invoke(main, ["analyze", mp, "--json"])
+        assert result.exit_code == 0, result.stderr
+        parsed = json.loads(result.stdout)
+        names = {r["plugin"]["name"] for r in parsed["reports"]}
+        assert names == {"plugin-alpha", "plugin-beta"}
+        # Bundled entries still use the outer source verbatim (no " → ").
+        for r in parsed["reports"]:
+            assert r["plugin"]["source"] == mp
+            assert r["plugin"]["path"].startswith("plugins/")
+
+
 # ============================================================================
 # Phase 1.5 Unit 5: Dependencies section E2E
 # ============================================================================
