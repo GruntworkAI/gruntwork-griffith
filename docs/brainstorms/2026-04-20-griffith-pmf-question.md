@@ -244,6 +244,74 @@ Not a commitment — just the list so we don't lose it:
 Ideally 1, 4, 5 happen before more code gets written. 2 and 3 are
 independent and can happen any time.
 
+## Update 2026-04-20 (post-first-audit): Path 4's PR half has a low ceiling
+
+Ran Griffith against `obra/superpowers` (the flagship plugin in the
+superpowers-marketplace ecosystem) to test the "contribute fixes
+upstream" branch of Path 4. Two concrete findings — one about the
+plugin, one about the contribution model.
+
+**About the plugin.** Griffith's refined rules worked as designed: the
+pre-refinement signal would have been 20 noisy findings (19
+path-traversals + 1 bash-c-inline). Post-refinement, the output was
+19 info capability-signals + 1 *real* critical finding (`bash -c
+"$cmd"` with interpolated variable in `tests/claude-code/test-
+helpers.sh`). Clean demonstration of the noise-reduction Phase 1.5 +
+the AST refinement were supposed to deliver.
+
+**About the contribution model — the more important finding.**
+Superpowers' `CLAUDE.md` / `AGENTS.md` explicitly rejects exactly
+the kind of contribution Griffith produces:
+
+> Every PR must solve a real problem that someone actually
+> experienced. "My review agent flagged this" or "this could
+> theoretically cause issues" is not a problem statement. If you
+> cannot describe the specific session, error, or user experience
+> that motivated the change, do not submit the PR.
+
+Their stated PR rejection rate is 94%. They close "slop" PRs from
+agents within hours. Griffith's finding — technically correct, no
+incident attached — is by their definition slop.
+
+**Implication for Path 4:**
+
+- The "post upstream PRs" half has a **low ceiling** for
+  maintainers with a strong anti-slop posture. Expect closes, not
+  merges, unless we're backing findings with real incidents.
+- The "audit report / public" half is still viable and strong —
+  doesn't require upstream coordination, demonstrates Griffith's
+  value directly, respects a project's posture without asking for
+  their cooperation.
+- **Griffith's primary value is consumer-facing, not author-facing.**
+  A pre-install audit tool for someone deciding whether to install
+  matters; a post-install contribution-generator for someone who
+  already ships the plugin matters less.
+
+**Implication for the product question:** this sharpens the positioning.
+"Tool that helps plugin *consumers* decide what to install" is a
+cleaner thesis than "tool that helps plugin *authors* ship safer
+code." The two audiences have different needs:
+
+- **Consumer:** wants pre-install audit, context cost estimate,
+  security triage, discovery help. Griffith does most of this today.
+- **Author:** wants self-audit before publishing (similar), OR
+  outbound signal that their plugin meets quality bars (Observatory).
+  The author use case today is weak because they already know their
+  own code.
+
+The consumer thesis is where Phase 2 (Runtime Monitor) and the
+skills-first pivot (Path 2) actually compound — both are
+consumer-oriented. Observatory is consumer-facing too (browse +
+choose) even though it has author-facing side effects.
+
+Adjust the decision table accordingly: strong demand signal →
+skills-first consumer MVP. Weak signal → stop.
+
+**First audit report shipped:**
+`docs/audits/2026-04-20-superpowers.md` — Griffith vs obra/superpowers.
+Becomes the template for future audit reports if we keep running this
+pattern.
+
 ## Sources
 
 - Current design doc: `docs/design.md` (Phases 1-3 + business model)
@@ -253,3 +321,6 @@ independent and can happen any time.
   strategic reflection
 - Related followups: `.claude/work/followups/` (6 items, all
   trigger-gated)
+- First audit report: `docs/audits/2026-04-20-superpowers.md`
+- superpowers' contribution posture:
+  https://github.com/obra/superpowers/blob/main/AGENTS.md
