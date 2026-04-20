@@ -1,5 +1,11 @@
 # Follow-up: osv adapter renders cross-ecosystem `fixed_versions`
 
+**Status: DONE (2026-04-19).** Fixed on main at commit `cd74302`.
+`_extract_fixed_versions` now takes `target_ecosystem` and filters
+`affected[]` entries. Real-world check on compound-engineering 2.67.0
+shows GHSA-j7hp-h8jx-5ppr now renders `fixed: 10.0.1` (was
+`fixed: 0.1.8, 0.9.3, 22.3.24, +16`).
+
 **Surfaced while drafting the PR to EveryInc for the Pillow CVEs (2026-04-19).**
 
 Griffith's osv adapter (`src/griffith/analyzer/osv_adapter.py::
