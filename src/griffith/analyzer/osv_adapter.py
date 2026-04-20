@@ -410,7 +410,12 @@ def _extract_vulnerabilities(osv_output: dict) -> list[Vulnerability]:
                     if isinstance(vuln_detail, dict)
                     else ""
                 )
-                fixed_versions = _extract_fixed_versions(vuln_detail)
+                target_ecosystem = (
+                    pkg.get("ecosystem", "") if isinstance(pkg, dict) else ""
+                )
+                fixed_versions = _extract_fixed_versions(
+                    vuln_detail, target_ecosystem
+                )
                 findings.append(
                     Vulnerability(
                         id=sanitize_string(primary_id, DEFAULT_MAX_NAME_LENGTH),
@@ -434,14 +439,33 @@ def _extract_vulnerabilities(osv_output: dict) -> list[Vulnerability]:
     return findings
 
 
-def _extract_fixed_versions(vuln_detail: dict) -> list[str]:
-    """Walk the vulnerability's affected[] array to find FIXED event versions."""
+def _extract_fixed_versions(
+    vuln_detail: dict, target_ecosystem: str = ""
+) -> list[str]:
+    """Walk the vulnerability's affected[] array to find FIXED event versions.
+
+    When `target_ecosystem` is set, only entries whose
+    `affected[].package.ecosystem` matches are considered — prevents
+    cross-ecosystem noise in the output. A single OSV advisory can list
+    fixes for libwebp-sys, Electron, Pillow, etc. in the same payload;
+    a Pillow scan only wants the Pillow fix.
+
+    Entries without a `package.ecosystem` key are skipped defensively
+    when filtering is requested, rather than admitted — missing is
+    better than misleading.
+    """
     if not isinstance(vuln_detail, dict):
         return []
     fixed: list[str] = []
     for affected in vuln_detail.get("affected") or []:
         if not isinstance(affected, dict):
             continue
+        if target_ecosystem:
+            pkg = affected.get("package") or {}
+            if not isinstance(pkg, dict):
+                continue
+            if pkg.get("ecosystem") != target_ecosystem:
+                continue
         for r in affected.get("ranges") or []:
             if not isinstance(r, dict):
                 continue
