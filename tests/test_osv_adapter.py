@@ -126,6 +126,10 @@ class TestExtractVulnerabilities:
                                     "summary": "requests SSRF",
                                     "affected": [
                                         {
+                                            "package": {
+                                                "ecosystem": "PyPI",
+                                                "name": "requests",
+                                            },
                                             "ranges": [
                                                 {
                                                     "events": [
@@ -133,7 +137,7 @@ class TestExtractVulnerabilities:
                                                         {"fixed": "2.31.0"},
                                                     ]
                                                 }
-                                            ]
+                                            ],
                                         }
                                     ],
                                 }
@@ -206,6 +210,117 @@ class TestExtractVulnerabilities:
         vulns = _extract_vulnerabilities(osv_output)
         assert len(vulns) == 1
         assert vulns[0].id == "CVE-OK"
+
+    def test_fixed_versions_filtered_per_ecosystem(self):
+        """Regression: GHSA-j7hp-h8jx-5ppr (libwebp CVE) affects eleven
+        ecosystems in OSV; a Pillow scan should see ONLY the PyPI fix
+        version (10.0.1), not the libwebp / Electron / Go / NuGet ones.
+
+        Flagged from PR #608 drafted against EveryInc for compound-engineering
+        on 2026-04-19. Followup:
+        .claude/work/followups/osv-fixed-versions-per-ecosystem.md
+        """
+        osv_output = {
+            "results": [
+                {
+                    "packages": [
+                        {
+                            "package": {"name": "pillow", "ecosystem": "PyPI"},
+                            "groups": [{"ids": ["GHSA-j7hp"], "max_severity": "8.8"}],
+                            "vulnerabilities": [
+                                {
+                                    "id": "GHSA-j7hp",
+                                    "summary": "libwebp OOB write",
+                                    "affected": [
+                                        {
+                                            "package": {"ecosystem": "PyPI", "name": "pillow"},
+                                            "ranges": [{"events": [{"introduced": "0"}, {"fixed": "10.0.1"}]}],
+                                        },
+                                        {
+                                            "package": {"ecosystem": "crates.io", "name": "libwebp-sys2"},
+                                            "ranges": [{"events": [{"introduced": "0"}, {"fixed": "0.1.8"}]}],
+                                        },
+                                        {
+                                            "package": {"ecosystem": "npm", "name": "electron"},
+                                            "ranges": [{"events": [{"introduced": "22.0.0"}, {"fixed": "22.3.24"}]}],
+                                        },
+                                    ],
+                                }
+                            ],
+                        }
+                    ]
+                }
+            ]
+        }
+        vulns = _extract_vulnerabilities(osv_output)
+        assert len(vulns) == 1
+        # Only the PyPI fix survives; cross-ecosystem noise gone.
+        assert vulns[0].fixed_versions == ["10.0.1"]
+
+    def test_fixed_versions_empty_when_no_matching_ecosystem(self):
+        """If the vuln lists no `affected[]` entry matching the scanned
+        package's ecosystem, result is empty — missing is better than
+        misleading."""
+        osv_output = {
+            "results": [
+                {
+                    "packages": [
+                        {
+                            "package": {"name": "pkg", "ecosystem": "PyPI"},
+                            "groups": [{"ids": ["CVE-1"], "max_severity": "5.0"}],
+                            "vulnerabilities": [
+                                {
+                                    "id": "CVE-1",
+                                    "summary": "x",
+                                    "affected": [
+                                        {
+                                            "package": {"ecosystem": "npm"},
+                                            "ranges": [{"events": [{"fixed": "1.0.0"}]}],
+                                        }
+                                    ],
+                                }
+                            ],
+                        }
+                    ]
+                }
+            ]
+        }
+        vulns = _extract_vulnerabilities(osv_output)
+        assert vulns[0].fixed_versions == []
+
+    def test_fixed_versions_affected_missing_package_key(self):
+        """Affected entries without a `package.ecosystem` key are
+        skipped defensively — no cross-ecosystem leak."""
+        osv_output = {
+            "results": [
+                {
+                    "packages": [
+                        {
+                            "package": {"name": "pkg", "ecosystem": "PyPI"},
+                            "groups": [{"ids": ["CVE-2"], "max_severity": "5.0"}],
+                            "vulnerabilities": [
+                                {
+                                    "id": "CVE-2",
+                                    "summary": "x",
+                                    "affected": [
+                                        {
+                                            # no `package` key
+                                            "ranges": [{"events": [{"fixed": "9.9"}]}],
+                                        },
+                                        {
+                                            "package": {"ecosystem": "PyPI"},
+                                            "ranges": [{"events": [{"fixed": "1.2.3"}]}],
+                                        },
+                                    ],
+                                }
+                            ],
+                        }
+                    ]
+                }
+            ]
+        }
+        vulns = _extract_vulnerabilities(osv_output)
+        assert vulns[0].fixed_versions == ["1.2.3"]
 
 
 # ============================================================================
