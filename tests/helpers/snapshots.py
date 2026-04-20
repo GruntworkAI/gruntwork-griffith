@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 from collections import Counter
 from pathlib import Path
 
@@ -82,7 +83,12 @@ def assert_snapshot(snapshot_name: str, findings, *, griffith_version: str):
         }
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(json.dumps(snapshot, indent=2) + "\n")
-        print(f"Regenerated snapshot: {path}")
+        # Announce on stderr (not stdout) so the action is visible under
+        # `pytest -q` and doesn't pollute stdout for tools that parse it.
+        print(
+            f"Regenerated snapshot: {path.name} at {path}",
+            file=sys.stderr,
+        )
         return
 
     if not path.exists():

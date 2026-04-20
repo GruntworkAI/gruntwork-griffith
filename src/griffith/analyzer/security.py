@@ -41,6 +41,12 @@ _DEFAULT_LIMITS_PATH = _PROJECT_ROOT / "rules" / "limits.yaml"
 _DEFAULT_MAX_LINE_BYTES = 16 * 1024
 _DEFAULT_REGEX_TIMEOUT = 1.0
 
+# Upper bound on the `meta.ast_parse_failures` list. An adversarial plugin
+# with thousands of unparseable .py files could otherwise bloat the report.
+# Once the cap is exceeded, an overflow sentinel replaces the tail so the
+# consumer sees exactly how many entries were truncated.
+_AST_PARSE_FAILURES_CAP = 100
+
 SEVERITY_ORDER: ClassVar = ["critical", "high", "medium", "low", "info"]
 
 
@@ -149,8 +155,19 @@ class SecurityScanner:
     def ast_parse_failures(self) -> list[str]:
         """Relative paths of non-hook .py files whose AST parse failed
         during the most recent `scan()` call. Hook-path parse failures
-        are emitted as findings in `security.findings[]`, not here."""
-        return list(self._ast_parse_failures)
+        are emitted as findings in `security.findings[]`, not here.
+
+        Capped at `_AST_PARSE_FAILURES_CAP` entries; if the cap is
+        exceeded, an overflow sentinel `"... <N> more omitted"` is
+        appended so the consumer sees the truncation.
+        """
+        raw = self._ast_parse_failures
+        if len(raw) <= _AST_PARSE_FAILURES_CAP:
+            return list(raw)
+        omitted = len(raw) - _AST_PARSE_FAILURES_CAP
+        return list(raw[:_AST_PARSE_FAILURES_CAP]) + [
+            f"... {omitted} more omitted"
+        ]
 
     def _ensure_loaded(self) -> None:
         if self._rules is None:
