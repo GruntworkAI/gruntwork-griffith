@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import json
 import sys
 from pathlib import Path
+from typing import Any
 
 import click
 from rich.console import Console
@@ -96,13 +98,20 @@ def _run_analysis(
     strict: bool,
     sca: bool,
 ) -> None:
-    """Detect single-plugin vs marketplace, analyze, render."""
-    marketplace_manifest = path / ".claude-plugin" / "marketplace.json"
-    plugins_dir = path / "plugins"
+    """Detect single-plugin vs marketplace, analyze, render.
 
-    if marketplace_manifest.exists() and plugins_dir.is_dir():
+    Marketplace detection: presence of `.claude-plugin/marketplace.json`
+    is the sole signal. Bundled marketplaces (with a `plugins/` subdir),
+    federated marketplaces (entries with URL / path source objects),
+    and mixed marketplaces (both) are all handled uniformly by reading
+    the manifest's `plugins[]` array.
+    """
+    marketplace_manifest = path / ".claude-plugin" / "marketplace.json"
+
+    if marketplace_manifest.exists():
         reports = _analyze_marketplace(
-            path, plugins_dir, source, source_type, strict=strict, sca=sca
+            path, marketplace_manifest, source, source_type,
+            strict=strict, sca=sca,
         )
         mp_report = build_marketplace_report(
             reports=reports,
@@ -152,32 +161,136 @@ def _analyze_single(
 
 def _analyze_marketplace(
     marketplace_root: Path,
-    plugins_dir: Path,
+    marketplace_manifest: Path,
     source: str,
     source_type: SourceType,
     *,
     strict: bool,
     sca: bool,
 ) -> list[Report]:
+    """Walk a marketplace manifest and analyze each plugin entry.
+
+    Each entry in `plugins[]` has a `source` field of one of three shapes:
+
+    - string starting with `./` or `/` — bundled, relative to marketplace root
+    - {"source": "url", "url": "..."} — federated, cloned via sources.resolve
+    - {"source": "path", "path": "..."} — federated, local path
+
+    Bundled entries keep the existing semantics: plugin.source = outer
+    source, plugin.path = relative path under marketplace root.
+    Federated entries use a concatenated source field
+    (`outer_source → inner_ref`) so the rendered audit shows full
+    provenance at a glance.
+
+    Per-plugin clone failures propagate — a failed clone raises
+    GriffithCloneError, which the CLI handler maps to exit 1. Assumption:
+    clone failures are rare + typically transient; user reruns rather
+    than consuming a partial marketplace report.
+    """
+    try:
+        with marketplace_manifest.open() as f:
+            manifest_data = json.load(f)
+    except (OSError, json.JSONDecodeError) as e:
+        raise ValueError(
+            f"Could not read marketplace manifest at {marketplace_manifest}: {e}"
+        )
+
+    entries = manifest_data.get("plugins") or []
+    if not isinstance(entries, list):
+        raise ValueError(
+            f"marketplace.json `plugins` must be a list, got {type(entries).__name__}"
+        )
+
     reports: list[Report] = []
-    for child in sorted(plugins_dir.iterdir()):
-        if not child.is_dir() or child.is_symlink():
+    for entry in entries:
+        if not isinstance(entry, dict):
             continue
-        manifest = child / ".claude-plugin" / "plugin.json"
-        if not manifest.exists():
-            continue
-        rel_path = str(child.relative_to(marketplace_root))
         reports.append(
-            _analyze_single(
-                child,
-                source,
-                source_type,
-                strict=strict,
-                sca=sca,
-                plugin_path_override=rel_path,
+            _analyze_marketplace_entry(
+                entry, marketplace_root, source, strict=strict, sca=sca,
             )
         )
     return reports
+
+
+def _analyze_marketplace_entry(
+    entry: dict[str, Any],
+    marketplace_root: Path,
+    outer_source: str,
+    *,
+    strict: bool,
+    sca: bool,
+) -> Report:
+    """Analyze a single marketplace entry, dispatching on its source shape."""
+    entry_source = entry.get("source")
+
+    # Shape 1: string source → bundled, relative to marketplace root.
+    if isinstance(entry_source, str):
+        rel = entry_source.removeprefix("./")
+        plugin_path = (marketplace_root / rel).resolve()
+        if not plugin_path.exists():
+            raise FileNotFoundError(
+                f"Bundled plugin path does not exist: {plugin_path} "
+                f"(from marketplace.json entry {entry.get('name', '?')!r})"
+            )
+        return _analyze_single(
+            plugin_path,
+            outer_source,  # bundled keeps outer-source semantics
+            "path",
+            strict=strict, sca=sca,
+            plugin_path_override=rel,
+        )
+
+    # Shape 2+: object source → federated.
+    if isinstance(entry_source, dict):
+        kind = entry_source.get("source")
+        if kind == "url":
+            inner_url = entry_source.get("url", "")
+            if not inner_url:
+                raise ValueError(
+                    f"Federated marketplace entry {entry.get('name', '?')!r} "
+                    f"has source type=url but no url field"
+                )
+            concat_source = f"{outer_source} → {inner_url}"
+            # Clone the inner URL (hardened) and analyze.
+            with resolve(inner_url) as (inner_path, _inner_type):
+                return _analyze_single(
+                    inner_path,
+                    concat_source,
+                    "url",
+                    strict=strict, sca=sca,
+                    plugin_path_override=".",
+                )
+        if kind == "path":
+            inner_path_str = entry_source.get("path", "")
+            if not inner_path_str:
+                raise ValueError(
+                    f"Federated marketplace entry {entry.get('name', '?')!r} "
+                    f"has source type=path but no path field"
+                )
+            inner_path = (marketplace_root / inner_path_str).resolve()
+            if not inner_path.exists():
+                raise FileNotFoundError(
+                    f"Federated path source does not exist: {inner_path} "
+                    f"(from marketplace.json entry {entry.get('name', '?')!r})"
+                )
+            concat_source = f"{outer_source} → {inner_path_str}"
+            return _analyze_single(
+                inner_path,
+                concat_source,
+                "path",
+                strict=strict, sca=sca,
+                plugin_path_override=".",
+            )
+        raise ValueError(
+            f"Unknown federated source kind {kind!r} in marketplace entry "
+            f"{entry.get('name', '?')!r} (expected 'url' or 'path')"
+        )
+
+    raise ValueError(
+        f"Marketplace entry {entry.get('name', '?')!r} has malformed source: "
+        f"expected string or object, got {type(entry_source).__name__}"
+    )
 
 
 @main.command()
