@@ -147,6 +147,11 @@ class MetaDict(TypedDict):
     griffith_hardening_version: str
     analyzed_at: str  # ISO-8601 UTC
     source_type: SourceType
+    # Relative paths of .py files whose AST analysis failed. Hook-path
+    # parse failures additionally emit `ast-parse-failed` findings in
+    # `security.findings[]`; this list covers only the non-hook cases
+    # (typically generated / vendored Python).
+    ast_parse_failures: list[str]
 
 
 class Report(TypedDict):
@@ -224,6 +229,7 @@ def build_report(
     source: str,
     source_type: SourceType,
     plugin_path_override: str | None = None,
+    ast_parse_failures: list[str] | None = None,
 ) -> Report:
     """Compose a single-plugin Report dict from analyzer outputs."""
     risk_level = _derive_risk_level(security_findings)
@@ -279,7 +285,7 @@ def build_report(
         dependencies=_build_dependency_dict(dependency_report),
         analysis_scope=list(ANALYSIS_SCOPE),
         untrusted_fields=list(UNTRUSTED_FIELDS),
-        meta=_build_meta(source_type),
+        meta=_build_meta(source_type, ast_parse_failures),
     )
 
 
@@ -386,11 +392,14 @@ def _summarize(reports: list[Report]) -> MarketplaceSummary:
     )
 
 
-def _build_meta(source_type: SourceType) -> MetaDict:
+def _build_meta(
+    source_type: SourceType, ast_parse_failures: list[str] | None = None
+) -> MetaDict:
     return MetaDict(
         griffith_version=__version__,
         griffith_hardening_version=GRIFFITH_HARDENING_VERSION,
         analyzed_at=datetime.datetime.now(datetime.timezone.utc)
         .strftime("%Y-%m-%dT%H:%M:%SZ"),
         source_type=source_type,
+        ast_parse_failures=list(ast_parse_failures) if ast_parse_failures else [],
     )

@@ -28,7 +28,10 @@ from typing import ClassVar, Iterable
 import regex  # pip: regex — supports timeout=
 import yaml
 
+from griffith.analyzer.findings import SecurityFinding
 from griffith.analyzer.inventory import ComponentFile, PluginInventory
+
+__all__ = ["SecurityFinding", "SecurityScanner"]
 
 _THIS_FILE = Path(__file__).resolve()
 _PROJECT_ROOT = _THIS_FILE.parent.parent.parent.parent  # project root
@@ -39,25 +42,6 @@ _DEFAULT_MAX_LINE_BYTES = 16 * 1024
 _DEFAULT_REGEX_TIMEOUT = 1.0
 
 SEVERITY_ORDER: ClassVar = ["critical", "high", "medium", "low", "info"]
-
-
-@dataclass
-class SecurityFinding:
-    """A single security concern raised against one file.
-
-    `message` is the rule's human-readable description — safe for embedding.
-    The matched bytes are never included to prevent secret leakage.
-    """
-
-    rule_id: str
-    severity: str
-    file: str
-    line: int
-    message: str
-    # Deprecated field kept for backwards-compat with the original stub.
-    # Carries the rule's regex pattern source for debugging; NOT the matched
-    # bytes. Not embedded in the JSON report.
-    pattern: str = ""
 
 
 @dataclass
@@ -154,6 +138,19 @@ class SecurityScanner:
         self._rules: list[_CompiledRule] | None = None
         self._max_line_bytes: int | None = None
         self._regex_timeout: float | None = None
+        # Non-hook .py files whose AST analysis failed to parse, populated
+        # during `scan()`. Consumers read via the `ast_parse_failures`
+        # property and pass through to `meta.ast_parse_failures`.
+        # Hook-path parse failures are emitted as `ast-parse-failed`
+        # findings, NOT recorded here.
+        self._ast_parse_failures: list[str] = []
+
+    @property
+    def ast_parse_failures(self) -> list[str]:
+        """Relative paths of non-hook .py files whose AST parse failed
+        during the most recent `scan()` call. Hook-path parse failures
+        are emitted as findings in `security.findings[]`, not here."""
+        return list(self._ast_parse_failures)
 
     def _ensure_loaded(self) -> None:
         if self._rules is None:
@@ -217,6 +214,9 @@ class SecurityScanner:
         self._ensure_loaded()
         assert self._rules is not None  # _ensure_loaded populates
 
+        # Reset per-scan state.
+        self._ast_parse_failures = []
+
         findings: list[SecurityFinding] = []
 
         # 1. Inventory-walk findings (symlinks, oversized files)
@@ -252,7 +252,39 @@ class SecurityScanner:
                 continue
             findings.extend(self._scan_file(inventory.path, cf))
 
-        # 3. Sort: severity (critical → info), then file, then line
+        # 3. AST pass — applies to Python files under any registered
+        # @ast_rule's file_filter. Per-file parse failures split by path:
+        # hook-path failures emit `ast-parse-failed` findings (high);
+        # non-hook failures accumulate in self._ast_parse_failures for
+        # `meta.ast_parse_failures`.
+        from griffith.analyzer.ast_rules import run_ast_rules
+
+        for cf in _all_components(inventory):
+            if cf.is_symlink or cf.size_skipped:
+                continue
+            ast_findings, parse_err = run_ast_rules(inventory.path, cf)
+            findings.extend(ast_findings)
+            if parse_err is not None:
+                if cf.path.startswith("hooks/"):
+                    findings.append(
+                        SecurityFinding(
+                            rule_id="ast-parse-failed",
+                            severity="high",
+                            file=cf.path,
+                            line=0,
+                            message=(
+                                "Hook Python file could not be parsed. "
+                                "AST rules skipped for this file — "
+                                "structural analysis disabled on "
+                                "executable hook code is a concerning "
+                                "signal. Detail: " + parse_err
+                            ),
+                        )
+                    )
+                else:
+                    self._ast_parse_failures.append(cf.path)
+
+        # 4. Sort: severity (critical → info), then file, then line
         findings.sort(
             key=lambda f: (SEVERITY_ORDER.index(f.severity), f.file, f.line)
         )

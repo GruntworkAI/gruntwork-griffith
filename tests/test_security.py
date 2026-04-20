@@ -51,9 +51,17 @@ class TestDefaultRuleFirings:
         assert hit.severity == "critical"
         assert "curl-pipe.sh" in hit.file
 
-    def test_python_eval_exec_detected(self, traps_inventory):
+    def test_python_eval_exec_detected_via_ast_rules(self, traps_inventory):
+        """Hook-path eval/exec used to fire `python-eval-exec` (critical).
+        Post-AST-refinement, the YAML rule excludes `hooks/**/*.py` to
+        avoid stacking critical + info on the same call site. Hook
+        coverage comes from the AST rules instead — info capability
+        for any call, medium for non-literal args (the real signal)."""
         findings = SecurityScanner().scan(traps_inventory)
-        assert "python-eval-exec" in _ids(findings)
+        # The fixture's hooks/dynamic-exec.py calls `eval(code)` with a
+        # non-literal argument — both AST rules fire.
+        assert "dynamic-code-exec" in _ids(findings)
+        assert "dynamic-code-exec-dynamic-arg" in _ids(findings)
 
     def test_subprocess_in_hooks_detected(self, traps_inventory):
         findings = SecurityScanner().scan(traps_inventory)
@@ -360,16 +368,58 @@ class TestRealPluginCompoundEngineering:
         timeouts = [f for f in findings if f.rule_id == "regex-timeout"]
         assert not timeouts
 
-    def test_default_mode_critical_findings_are_low_false_positive(self):
-        """False-positive gate: default-mode critical+high findings on CE should be
-        a small number (plugin is well-curated upstream). If this jumps to 50+,
-        default rules are too broad."""
+
+# ============================================================================
+# Fingerprint-snapshot gates — R12 + R15
+# ============================================================================
+
+
+from griffith import __version__ as _GRIFFITH_VERSION  # noqa: E402
+from tests.helpers.snapshots import assert_snapshot  # noqa: E402
+
+SECURITY_TRAPS_FIXTURE = (
+    Path(__file__).parent / "fixtures" / "security-traps-plugin"
+)
+
+
+class TestSecurityTrapsSnapshot:
+    """R15: unconditional snapshot against a checked-in fixture so CI
+    environments without cached marketplace plugins still gate on rule
+    output. Runs without skipif.
+    """
+
+    @pytest.mark.timeout(5)
+    def test_security_traps_snapshot_matches(self):
+        inv = PluginInventory.from_path(SECURITY_TRAPS_FIXTURE)
+        findings = SecurityScanner().scan(inv)
+        assert_snapshot(
+            "security-traps-plugin",
+            findings,
+            griffith_version=_GRIFFITH_VERSION,
+        )
+
+
+@pytest.mark.skipif(not REAL_PLUGIN_LMF.exists(), reason="lastmilefirst not cached")
+class TestRealPluginLastMileFirstSnapshot:
+    @pytest.mark.timeout(5)
+    def test_lmf_snapshot_matches(self):
+        inv = PluginInventory.from_path(REAL_PLUGIN_LMF)
+        findings = SecurityScanner().scan(inv)
+        assert_snapshot(
+            "lastmilefirst-0.14.0",
+            findings,
+            griffith_version=_GRIFFITH_VERSION,
+        )
+
+
+@pytest.mark.skipif(not REAL_PLUGIN_CE.exists(), reason="compound-engineering not cached")
+class TestRealPluginCompoundEngineeringSnapshot:
+    @pytest.mark.timeout(5)
+    def test_ce_snapshot_matches(self):
         inv = PluginInventory.from_path(REAL_PLUGIN_CE)
         findings = SecurityScanner().scan(inv)
-        high_severity = [f for f in findings if f.severity in ("critical", "high")]
-        # Not an exact count — a soft ceiling. CE is heavily curated; more than
-        # 20 critical/high findings would indicate rule noise.
-        assert len(high_severity) <= 20, (
-            f"Default-mode high-severity findings too noisy: {len(high_severity)}\n"
-            f"Rules: {sorted({f.rule_id for f in high_severity})}"
+        assert_snapshot(
+            "compound-engineering-2.67.0",
+            findings,
+            griffith_version=_GRIFFITH_VERSION,
         )
