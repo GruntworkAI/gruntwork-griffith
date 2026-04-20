@@ -85,6 +85,27 @@ rules:
     context: ["hooks/**/*", "**/*.sh"]
     message: "Capability signal: plugin invokes a shell via -c. See bash-c-dynamic-interpolated (critical) and bash-c-dynamic-literal-dollar (medium) for stricter context-aware findings."
 
+  # bash-c-dynamic-interpolated: the double-quoted arg must contain a
+  # dynamic marker. Body is (?:[^"\\]|\\.)*? — handles escaped inner
+  # quotes \" — followed by lookahead for $VAR / ${...} / $(...) / backtick.
+  # Combined via alternation with the unquoted bare -c + $ case.
+  - id: bash-c-dynamic-interpolated
+    severity: critical
+    pattern: '(?<![\w-])(?:bash|sh|zsh)\s+-c\s+(?:"(?:[^"\\]|\\.)*?(?:\$[A-Za-z_\{]|\$\(|`)|[^"''\s]*\$)'
+    context: ["hooks/**/*", "**/*.sh"]
+    message: "bash -c argument contains dynamic shell expansion (${VAR}, $(...), or backticks) — runtime-controlled inputs can enable command injection. Known limitations: multi-line -c args with backslash-continuation are not detected."
+
+  # bash-c-dynamic-literal-dollar: single-quoted -c arg containing
+  # literal $. Shell normally suppresses $-expansion inside single
+  # quotes, but the presence of $ in this context is unusual and often
+  # indicates deferred-shell intent (nested sh -c expansion). Medium
+  # severity reflects uncertainty; capability info always fires too.
+  - id: bash-c-dynamic-literal-dollar
+    severity: medium
+    pattern: "(?<![\\w-])(?:bash|sh|zsh)\\s+-c\\s+'[^']*\\$[A-Za-z_\\{][^']*'"
+    context: ["hooks/**/*", "**/*.sh"]
+    message: "bash -c single-quoted argument contains literal $ — shell suppresses expansion here, but the pattern often indicates deferred-shell intent. Verify the argument is not then re-evaluated by a nested shell."
+
   - id: dotfile-write
     severity: high
     pattern: '~/\.(zshrc|bashrc|bash_profile|profile|zprofile)'
