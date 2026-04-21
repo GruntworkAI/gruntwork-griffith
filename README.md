@@ -1,4 +1,8 @@
-# Griffith 🔭
+<p align="center">
+  <img src="docs/img/griffith-logo-web.jpg" alt="Griffith — Plugin Observatory for Claude Code" width="720">
+</p>
+
+# Griffith
 
 > Plugin Observatory for Claude Code
 
