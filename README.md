@@ -22,6 +22,11 @@ Griffith runs static analysis on a plugin's source tree and produces a structure
 | **Architecture** | What pattern does this plugin follow? (agent-heavy, skill-first, mcp-based, hybrid) + recommendations. |
 | **Dependencies** | What packages does this plugin bring in? Tier 1 inventory across npm, PyPI, and more. With `--sca`, Tier 2 osv-scanner CVE lookup. |
 
+## Prerequisites
+
+- Python 3.11+
+- [Poetry](https://python-poetry.org/docs/#installation) — `pipx install poetry` recommended
+
 ## Installation
 
 ```bash
