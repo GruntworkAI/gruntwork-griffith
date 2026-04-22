@@ -43,6 +43,15 @@ brew install osv-scanner  # or see osv-scanner install docs for other platforms
 
 Packaging for `pipx install griffith` remains a followup.
 
+### Troubleshooting
+
+If `poetry install` reports a Python version mismatch, point Poetry at a 3.11 interpreter explicitly:
+
+```bash
+poetry env use $(brew --prefix python@3.11)/bin/python3.11   # macOS/Homebrew
+poetry env use python3.11                                     # other platforms
+```
+
 ## Quick Start
 
 ```bash
