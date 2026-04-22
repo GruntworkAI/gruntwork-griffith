@@ -312,6 +312,51 @@ skills-first consumer MVP. Weak signal → stop.
 Becomes the template for future audit reports if we keep running this
 pattern.
 
+## Update 2026-04-21: first external engagement signals
+
+Two small positive data points came in the day after the PMF
+brainstorm was written. Neither is conclusive, but they're the first
+evidence that anyone besides Michael interacts with Griffith's
+output.
+
+**Upstream PR merged.** The Pillow CVE floor bump filed to
+`EveryInc/compound-engineering-plugin` (derived from Griffith's
+`--sca` findings during the audit-plugin wrapper development) was
+accepted and merged. Matters because: it's a concrete case where
+Griffith's output produced a contribution a reputable upstream was
+willing to take. It's also an existence proof for Path 4 — even
+after the superpowers contribution-policy finding said "don't send
+review-agent PRs upstream," there are maintainers who DO take PRs
+like this. The variable is the upstream's posture, not Griffith's
+output quality.
+
+**First external star on `GruntworkAI/gruntwork-griffith`.** One
+person outside the author's own identity starred the repo. Tiny by
+any absolute measure, but the count went from 0 to 1, which is the
+number that actually matters for the "am I the only one who cares"
+question.
+
+**How this updates the decision table:**
+
+| Signal strength | Previous read | Updated read |
+|---|---|---|
+| Upstream interest | Unknown | At least one upstream takes Griffith-sourced PRs |
+| External awareness | Unknown | At least one external viewer starred the repo |
+
+Still not enough to justify investing in Phase 2 (Runtime Monitor)
+or Phase 3 (Observatory). But enough to keep Path 4 alive
+(continued opportunistic audit reports + upstream contributions
+where maintainer posture welcomes them) without it feeling like
+shouting into the void.
+
+**Recommended posture shift:** continue Path 4 as a low-cost
+signal-gathering exercise. Each audit + each PR + each star is
+another data point. Revisit the PMF brainstorm with the accumulated
+data in ~30 days — if the count of external engagements has grown
+meaningfully, re-open the skills-first MVP option (Path 2). If it's
+plateaued at 1-2, the signal is "useful for me, maybe a few others,
+not a product" and Phase 2/3 should stay deferred.
+
 ## Sources
 
 - Current design doc: `docs/design.md` (Phases 1-3 + business model)
