@@ -589,3 +589,65 @@ class TestAnalyzerScaIntegration:
         assert report.sca is not None
         assert report.sca.vulnerability_count == 1
         assert report.scan_status == "ok"
+
+
+# ============================================================================
+# run_osv_scanner — correctness regression (real osv-scanner, real osv.dev)
+# ============================================================================
+
+SCA_REGRESSION_FIXTURE = (
+    Path(__file__).parent / "fixtures" / "sca-regression-plugin"
+)
+
+# Stable GHSA advisories for lodash@4.17.19. Asserting any-of rather than
+# all-of keeps the test robust to osv.dev catalog updates (new advisories
+# may be added; existing ones very rarely withdrawn).
+EXPECTED_LODASH_4_17_19_GHSA = {
+    "GHSA-29mw-wpgm-hmr9",
+    "GHSA-35jh-r3h4-6jhm",
+    "GHSA-f23m-r3pf-42rh",
+    "GHSA-r5fr-rjxr-66jc",
+    "GHSA-xxjr-mmjv-4gpg",
+}
+
+
+@pytest.mark.network
+class TestScaRegression:
+    """End-to-end regression against the silent false-negative bug fixed
+    in PR #3.
+
+    osv-scanner 2.x honors `.gitignore` during directory walk unless
+    `--no-ignore` is passed. Griffith's invocation originally omitted
+    the flag, so plugins whose lockfiles lived in gitignored subdirs
+    (e.g. `cli/`, `site/`) silently reported "no known vulnerabilities"
+    despite real CVEs.
+
+    The fixture has `.gitignore` excluding `cli/` and a pinned known-
+    vulnerable `lodash@4.17.19` in `cli/package-lock.json`. If any
+    future change drops `--no-ignore` (or otherwise breaks subdir
+    recursion), the scan will return zero vulnerabilities and this
+    assertion will fail — instead of the CVE section of a Griffith
+    report being silently wrong.
+    """
+
+    def test_known_cve_surfaces_despite_gitignored_subdir(self):
+        osv_binary = find_osv_scanner()
+        if osv_binary is None:
+            pytest.skip("osv-scanner not installed")
+
+        result = run_osv_scanner(osv_binary, SCA_REGRESSION_FIXTURE)
+
+        assert result.scan_status == "ok", (
+            f"scan failed: status={result.scan_status!r} error={result.error!r}"
+        )
+        assert result.vulnerability_count > 0, (
+            "silent false-negative: lodash@4.17.19 is in the lockfile "
+            "but the scan reported zero vulnerabilities. This is the "
+            "exact regression PR #3 fixed — check that --no-ignore is "
+            "still in the osv-scanner argv."
+        )
+        vuln_ids = {v.id for v in result.vulnerabilities}
+        assert vuln_ids & EXPECTED_LODASH_4_17_19_GHSA, (
+            f"none of the expected lodash GHSAs surfaced. "
+            f"Expected any of {EXPECTED_LODASH_4_17_19_GHSA}, got {vuln_ids}."
+        )
