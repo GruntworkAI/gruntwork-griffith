@@ -22,6 +22,11 @@ Griffith runs static analysis on a plugin's source tree and produces a structure
 | **Architecture** | What pattern does this plugin follow? (agent-heavy, skill-first, mcp-based, hybrid) + recommendations. |
 | **Dependencies** | What packages does this plugin bring in? Tier 1 inventory across npm, PyPI, and more. With `--sca`, Tier 2 osv-scanner CVE lookup. |
 
+## Prerequisites
+
+- Python 3.11+
+- [Poetry](https://python-poetry.org/docs/#installation) — `pipx install poetry` recommended
+
 ## Installation
 
 ```bash
@@ -37,6 +42,15 @@ brew install osv-scanner  # or see osv-scanner install docs for other platforms
 ```
 
 Packaging for `pipx install griffith` remains a followup.
+
+### Troubleshooting
+
+If `poetry install` reports a Python version mismatch, point Poetry at a 3.11 interpreter explicitly:
+
+```bash
+poetry env use $(brew --prefix python@3.11)/bin/python3.11   # macOS/Homebrew
+poetry env use python3.11                                     # other platforms
+```
 
 ## Quick Start
 
