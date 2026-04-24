@@ -174,6 +174,7 @@ def run_osv_scanner(
         "scan",
         "source",
         "-r",
+        "--no-ignore",
         "--format", "json",
     ]
     # Base excludes: version control + common vendored-tree dirs.
