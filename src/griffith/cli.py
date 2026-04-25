@@ -56,7 +56,22 @@ def main():
         "Hard-fails with exit code 2 when osv-scanner is unavailable."
     ),
 )
-def analyze(source: str, as_json: bool, strict: bool, sca: bool):
+@click.option(
+    "--include-vendored",
+    is_flag=True,
+    help=(
+        "Scan vendored/build directories (node_modules, .venv, vendor, "
+        "__pycache__, etc.) that are skipped by default. Useful when auditing "
+        "a specific dependency's bundled code. Expect much noisier output."
+    ),
+)
+def analyze(
+    source: str,
+    as_json: bool,
+    strict: bool,
+    sca: bool,
+    include_vendored: bool,
+):
     """Analyze a plugin from a git URL, GitHub shorthand, or local path.
 
     SOURCE can be:
@@ -72,6 +87,7 @@ def analyze(source: str, as_json: bool, strict: bool, sca: bool):
             _run_analysis(
                 path, source, source_type,
                 as_json=as_json, strict=strict, sca=sca,
+                include_vendored=include_vendored,
             )
     except OSVScannerMissingError as e:
         console_err.print(f"[bold red]--sca requested but osv-scanner not found:[/] {e}")
@@ -97,6 +113,7 @@ def _run_analysis(
     as_json: bool,
     strict: bool,
     sca: bool,
+    include_vendored: bool,
 ) -> None:
     """Detect single-plugin vs marketplace, analyze, render.
 
@@ -111,7 +128,7 @@ def _run_analysis(
     if marketplace_manifest.exists():
         reports = _analyze_marketplace(
             path, marketplace_manifest, source, source_type,
-            strict=strict, sca=sca,
+            strict=strict, sca=sca, include_vendored=include_vendored,
         )
         mp_report = build_marketplace_report(
             reports=reports,
@@ -126,7 +143,10 @@ def _run_analysis(
         return
 
     # Single plugin path
-    report = _analyze_single(path, source, source_type, strict=strict, sca=sca)
+    report = _analyze_single(
+        path, source, source_type,
+        strict=strict, sca=sca, include_vendored=include_vendored,
+    )
     if as_json:
         render_json(report)
     else:
@@ -140,9 +160,11 @@ def _analyze_single(
     *,
     strict: bool,
     sca: bool = False,
+    include_vendored: bool = False,
     plugin_path_override: str | None = None,
 ) -> Report:
-    inv = PluginInventory.from_path(plugin_path)
+    skip_dirs = frozenset() if include_vendored else None
+    inv = PluginInventory.from_path(plugin_path, skip_dirs=skip_dirs)
     scanner = SecurityScanner(strict=strict)
     sec_findings = scanner.scan(inv)
     footprint = FootprintEstimator().estimate(inv)
@@ -169,6 +191,7 @@ def _analyze_marketplace(
     *,
     strict: bool,
     sca: bool,
+    include_vendored: bool,
 ) -> list[Report]:
     """Walk a marketplace manifest and analyze each plugin entry.
 
@@ -209,7 +232,8 @@ def _analyze_marketplace(
             continue
         reports.append(
             _analyze_marketplace_entry(
-                entry, marketplace_root, source, strict=strict, sca=sca,
+                entry, marketplace_root, source,
+                strict=strict, sca=sca, include_vendored=include_vendored,
             )
         )
     return reports
@@ -222,6 +246,7 @@ def _analyze_marketplace_entry(
     *,
     strict: bool,
     sca: bool,
+    include_vendored: bool,
 ) -> Report:
     """Analyze a single marketplace entry, dispatching on its source shape."""
     entry_source = entry.get("source")
@@ -239,7 +264,7 @@ def _analyze_marketplace_entry(
             plugin_path,
             outer_source,  # bundled keeps outer-source semantics
             "path",
-            strict=strict, sca=sca,
+            strict=strict, sca=sca, include_vendored=include_vendored,
             plugin_path_override=rel,
         )
 
@@ -260,7 +285,7 @@ def _analyze_marketplace_entry(
                     inner_path,
                     concat_source,
                     "url",
-                    strict=strict, sca=sca,
+                    strict=strict, sca=sca, include_vendored=include_vendored,
                     plugin_path_override=".",
                 )
         if kind == "path":

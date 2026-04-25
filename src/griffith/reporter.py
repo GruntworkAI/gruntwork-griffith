@@ -150,6 +150,7 @@ def _render_header(report: Report, console: Console) -> None:
 def _render_inventory(report: Report, console: Console) -> None:
     counts = report["inventory"]["counts"]
     totals = report["inventory"]["totals"]
+    skipped_dirs = report["inventory"].get("skipped_dirs") or []
     table = Table(title="Inventory", show_header=False, box=None, padding=(0, 2))
     table.add_column("type", style="bold")
     table.add_column("count", justify="right")
@@ -161,6 +162,12 @@ def _render_inventory(report: Report, console: Console) -> None:
     table.add_row("[dim]total files[/]", f"[dim]{totals['files']}[/]")
     table.add_row("[dim]total lines[/]", f"[dim]{totals['lines']:,}[/]")
     console.print(table)
+    if skipped_dirs:
+        skipped = ", ".join(f"{d}/" for d in skipped_dirs)
+        console.print(
+            f"[yellow]Skipped vendored dirs:[/] {skipped} "
+            f"[dim](use --include-vendored to scan)[/]"
+        )
 
 
 def _render_security(report: Report, console: Console) -> None:
