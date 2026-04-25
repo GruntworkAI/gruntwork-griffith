@@ -68,14 +68,14 @@ gruntwork-griffith/
 │       ├── osv_adapter.py  # osv-scanner subprocess wrapper (find_osv_scanner + run_osv_scanner)
 │       └── security.py     # Regex + AST rule dispatch + scan() entry point
 ├── rules/
-│   ├── security_patterns.yaml   # Regex rule catalog
-│   ├── efficiency_heuristics.yaml
-│   └── known_overlaps.yaml
+│   ├── context_costs.yaml       # Per-component token-cost heuristics
+│   ├── limits.yaml              # Size, line, and timeout limits
+│   └── security_patterns.yaml   # Regex rule catalog
 ├── tests/
 │   ├── fixtures/                # Plugin trees for integration testing
 │   ├── snapshots/               # Fingerprint snapshots for 3 real plugins
 │   ├── helpers/snapshots.py     # assert_snapshot helper + GRIFFITH_REGENERATE_SNAPSHOTS env
-│   └── test_*.py                # 419 offline tests + 2 network tests
+│   └── test_*.py                # 439 tests total (419 typically pass + 18 skip without cached real plugins + 2 network)
 ├── docs/
 │   ├── design.md
 │   ├── json-schema.md           # Output contract (v0.1, unstable)
