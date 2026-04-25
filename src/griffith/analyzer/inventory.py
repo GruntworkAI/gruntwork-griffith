@@ -30,6 +30,25 @@ from griffith.sanitize import sanitize_frontmatter, sanitize_string
 # documented in the Phase 1 plan (Key Technical Decisions → Size caps).
 MAX_READ_BYTES = 2 * 1024 * 1024  # 2 MB
 
+# Directory names pruned from the walk by default. These are either
+# vendored-dependency trees (scanning them produces false-positive noise
+# against third-party code that isn't the plugin's own) or build output
+# caches that shouldn't be audited. Matches the set osv-scanner's
+# --experimental-exclude already uses for Tier 2 CVE lookup, plus
+# __pycache__ which is never meaningful plugin content.
+#
+# Callers that want to audit everything (e.g. for supply-chain review
+# of a specific dependency) can pass `skip_dirs=frozenset()` to
+# `PluginInventory.from_path`.
+DEFAULT_SKIP_DIRS: frozenset[str] = frozenset({
+    ".git",
+    "node_modules",
+    ".venv",
+    "venv",
+    "vendor",
+    "__pycache__",
+})
+
 
 @dataclass
 class ComponentFile:
@@ -58,6 +77,12 @@ class PluginInventory:
     unknown: list[ComponentFile] = field(default_factory=list)
     manifest: dict | None = None
     warnings: list[str] = field(default_factory=list)
+    # Top-level directory names that were pruned from the walk because
+    # they matched `skip_dirs` (e.g. node_modules, vendor). Empty when
+    # the plugin had no vendored dirs or when `--include-vendored` was
+    # passed. Surfaced in the rendered report so users know what wasn't
+    # scanned.
+    skipped_dirs: list[str] = field(default_factory=list)
 
     # Conventional directories that this inventory knows how to categorize.
     _CONVENTIONAL_DIRS: ClassVar[set[str]] = {
@@ -135,8 +160,19 @@ class PluginInventory:
     # --- construction --------------------------------------------------------
 
     @classmethod
-    def from_path(cls, path: Path | str) -> PluginInventory:
-        """Walk a plugin directory and return a structured inventory."""
+    def from_path(
+        cls,
+        path: Path | str,
+        *,
+        skip_dirs: frozenset[str] | None = None,
+    ) -> PluginInventory:
+        """Walk a plugin directory and return a structured inventory.
+
+        `skip_dirs` is the set of directory names pruned from the walk at
+        every level (vendored trees, build output). Defaults to
+        `DEFAULT_SKIP_DIRS`. Pass `frozenset()` to scan everything,
+        including `node_modules/`.
+        """
         plugin_root = Path(path)
         if not plugin_root.exists():
             raise FileNotFoundError(f"Plugin path does not exist: {plugin_root}")
@@ -145,21 +181,30 @@ class PluginInventory:
 
         plugin_root = plugin_root.resolve()
 
+        if skip_dirs is None:
+            skip_dirs = DEFAULT_SKIP_DIRS
+
         manifest, manifest_warnings = _load_manifest(plugin_root)
         name = _derive_name(manifest, plugin_root)
 
         inv = cls(name=name, path=plugin_root, manifest=manifest, warnings=list(manifest_warnings))
 
-        inv.agents = _walk_component(plugin_root, "agents", _is_markdown)
-        inv.commands = _walk_component(plugin_root, "commands", _is_markdown)
+        inv.agents = _walk_component(plugin_root, "agents", _is_markdown, skip_dirs)
+        inv.commands = _walk_component(plugin_root, "commands", _is_markdown, skip_dirs)
         inv.skills = _collect_skills(plugin_root)
-        inv.hooks = _walk_component(plugin_root, "hooks", _is_any_file)
+        inv.hooks = _walk_component(plugin_root, "hooks", _is_any_file, skip_dirs)
         inv.mcp_servers = _walk_component(
-            plugin_root, "mcp_servers", _is_any_file
-        ) + _walk_component(plugin_root, "mcp-servers", _is_any_file)
-        inv.personas = _walk_component(plugin_root, "personas", _is_markdown)
-        inv.templates = _walk_component(plugin_root, "templates", _is_any_file)
-        inv.unknown = _collect_unknown(plugin_root, inv._CONVENTIONAL_DIRS)
+            plugin_root, "mcp_servers", _is_any_file, skip_dirs
+        ) + _walk_component(plugin_root, "mcp-servers", _is_any_file, skip_dirs)
+        inv.personas = _walk_component(plugin_root, "personas", _is_markdown, skip_dirs)
+        inv.templates = _walk_component(plugin_root, "templates", _is_any_file, skip_dirs)
+        inv.unknown, skipped_at_root = _collect_unknown(
+            plugin_root, inv._CONVENTIONAL_DIRS, skip_dirs
+        )
+
+        inv.skipped_dirs = sorted(skipped_at_root)
+        for skipped in inv.skipped_dirs:
+            inv.warnings.append(f"Skipped vendored directory: {skipped}/")
 
         return inv
 
@@ -204,10 +249,13 @@ def _walk_component(
     plugin_root: Path,
     subdir_name: str,
     file_predicate,
+    skip_dirs: frozenset[str] = DEFAULT_SKIP_DIRS,
 ) -> list[ComponentFile]:
     """Walk `plugin_root/subdir_name` recursively without following symlinks.
 
     Subdirectories that are symlinks are recorded but not descended into.
+    Directories whose name is in `skip_dirs` are pruned silently (vendored
+    trees, build caches).
     Files that are symlinks are recorded with empty content and `is_symlink=True`.
     Files whose real path escapes the plugin root are skipped (realpath containment).
     """
@@ -223,6 +271,11 @@ def _walk_component(
     plugin_root_real = plugin_root.resolve()
 
     for dirpath, dirnames, filenames in os.walk(base, followlinks=False):
+        # Prune vendored / build dirs from the walk before we descend.
+        # Mutating `dirnames` in place is the documented mechanism for
+        # os.walk to skip descent.
+        dirnames[:] = [d for d in dirnames if d not in skip_dirs]
+
         # Record and prune symlinked subdirs so they don't descend.
         for d in list(dirnames):
             sub = Path(dirpath) / d
@@ -277,9 +330,20 @@ def _collect_skills(plugin_root: Path) -> list[ComponentFile]:
     return results
 
 
-def _collect_unknown(plugin_root: Path, conventional: set[str]) -> list[ComponentFile]:
-    """Any top-level directory not in the conventional set is recorded as `unknown`."""
+def _collect_unknown(
+    plugin_root: Path,
+    conventional: set[str],
+    skip_dirs: frozenset[str] = DEFAULT_SKIP_DIRS,
+) -> tuple[list[ComponentFile], set[str]]:
+    """Any top-level directory not in the conventional set is recorded as `unknown`.
+
+    Directories whose name is in `skip_dirs` are pruned at top level and
+    during descent. Returns the component list plus the set of top-level
+    directory names that were pruned (so the caller can surface them as
+    warnings).
+    """
     results: list[ComponentFile] = []
+    skipped_at_root: set[str] = set()
     plugin_root_real = plugin_root.resolve()
     for child in plugin_root.iterdir():
         if not child.is_dir():
@@ -289,11 +353,16 @@ def _collect_unknown(plugin_root: Path, conventional: set[str]) -> list[Componen
             continue
         if child.name in conventional:
             continue
+        if child.name in skip_dirs:
+            skipped_at_root.add(child.name)
+            continue
         if child.is_symlink():
             results.append(_symlink_component(plugin_root, child))
             continue
         # Walk and collect files from unknown dir
         for dirpath, dirnames, filenames in os.walk(child, followlinks=False):
+            # Prune vendored / build dirs during descent too.
+            dirnames[:] = [d for d in dirnames if d not in skip_dirs]
             for d in list(dirnames):
                 sub = Path(dirpath) / d
                 if sub.is_symlink():
@@ -311,7 +380,7 @@ def _collect_unknown(plugin_root: Path, conventional: set[str]) -> list[Componen
                 if not _is_within(real, plugin_root_real):
                     continue
                 results.append(_read_component(full, plugin_root))
-    return results
+    return results, skipped_at_root
 
 
 def _symlink_component(plugin_root: Path, path: Path) -> ComponentFile:

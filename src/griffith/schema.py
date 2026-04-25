@@ -60,6 +60,12 @@ class InventoryTotals(TypedDict):
 class InventoryDict(TypedDict):
     counts: InventoryCounts
     totals: InventoryTotals
+    # Top-level directory names that were pruned from the walk (e.g.
+    # "node_modules", "vendor"). Empty list when nothing was pruned or
+    # when `--include-vendored` was passed. Users seeing findings:0 on
+    # a plugin with bundled deps should check this to know whether the
+    # clean report is real or just because the noisy code wasn't scanned.
+    skipped_dirs: list[str]
 
 
 class FindingDict(TypedDict):
@@ -255,6 +261,7 @@ def build_report(
                 files=inventory.total_files,
                 lines=inventory.total_lines,
             ),
+            skipped_dirs=list(inventory.skipped_dirs),
         ),
         security=SecurityDict(
             risk_level=risk_level,

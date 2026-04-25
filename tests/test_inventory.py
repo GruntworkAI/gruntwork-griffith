@@ -123,6 +123,106 @@ class TestEdgeCases:
 
 
 # ============================================================================
+# skip_dirs — vendored / build directories pruned from walk by default
+# ============================================================================
+
+VENDOR_DIRS_FIXTURE_SUBDIR = "vendor-dirs-plugin"
+
+
+class TestSkipDirsDefault:
+    """By default, common vendored/build directories are pruned so the
+    security scanner doesn't trip on third-party code the plugin just
+    happens to have bundled. Regression: running Griffith against a
+    plugin's source tree (with bundled node_modules) produced 315
+    false-critical findings for one real plugin.
+    """
+
+    def test_node_modules_and_vendor_excluded_by_default(self, fixtures_dir):
+        inv = PluginInventory.from_path(fixtures_dir / VENDOR_DIRS_FIXTURE_SUBDIR)
+        # Only the real hook should be walked; node_modules/ and vendor/
+        # contents should be silently pruned.
+        assert inv.hooks_count == 1
+        assert inv.unknown_count == 0
+        hook_paths = [h.path for h in inv.hooks]
+        assert any("real-hook.sh" in p for p in hook_paths)
+        # Vendored content must not appear anywhere in the inventory.
+        all_paths = hook_paths + [u.path for u in inv.unknown]
+        assert not any("node_modules" in p for p in all_paths)
+        assert not any("vendor/" in p for p in all_paths)
+
+    def test_pruned_top_level_dirs_surface_as_warnings(self, fixtures_dir):
+        inv = PluginInventory.from_path(fixtures_dir / VENDOR_DIRS_FIXTURE_SUBDIR)
+        # Users get told what was skipped so a confusing "zero findings"
+        # doesn't mean "zero issues" on a plugin with bundled deps.
+        assert "Skipped vendored directory: node_modules/" in inv.warnings
+        assert "Skipped vendored directory: vendor/" in inv.warnings
+
+    def test_include_vendored_override_walks_everything(self, fixtures_dir):
+        """Passing skip_dirs=frozenset() (what --include-vendored sets) walks
+        the vendored dirs too — for supply-chain review of bundled code.
+        """
+        inv = PluginInventory.from_path(
+            fixtures_dir / VENDOR_DIRS_FIXTURE_SUBDIR,
+            skip_dirs=frozenset(),
+        )
+        # node_modules/ and vendor/ are non-conventional → classified as unknown
+        unknown_paths = [u.path for u in inv.unknown]
+        assert any("node_modules" in p for p in unknown_paths)
+        assert any("vendor/" in p for p in unknown_paths)
+
+    def test_custom_skip_dirs_honored(self, fixtures_dir):
+        """Callers can override the default set — e.g. skip only node_modules,
+        keep vendor/."""
+        inv = PluginInventory.from_path(
+            fixtures_dir / VENDOR_DIRS_FIXTURE_SUBDIR,
+            skip_dirs=frozenset({"node_modules"}),
+        )
+        unknown_paths = [u.path for u in inv.unknown]
+        assert not any("node_modules" in p for p in unknown_paths)
+        assert any("vendor/" in p for p in unknown_paths)
+        # Warning reflects the custom set, not the default.
+        assert "Skipped vendored directory: node_modules/" in inv.warnings
+        assert "Skipped vendored directory: vendor/" not in inv.warnings
+
+
+class TestSkipDirsDefaultsCoverPyAndVcs:
+    """The repo's top-level .gitignore blocks us from checking in a fixture
+    with __pycache__/.venv/.git — but the default-skip behavior must still
+    cover them. Parametrized tmp_path test plants each skip dir and asserts
+    the walker prunes it.
+    """
+
+    @pytest.mark.parametrize(
+        "skip_name",
+        ["__pycache__", ".git", ".venv", "venv"],
+    )
+    def test_default_skip_covers(self, tmp_path, skip_name):
+        plugin = tmp_path / "plugin"
+        (plugin / ".claude-plugin").mkdir(parents=True)
+        (plugin / ".claude-plugin" / "plugin.json").write_text(
+            '{"name": "skip-check"}'
+        )
+        # Plant a file in the skip dir that would otherwise be inventoried.
+        skip = plugin / skip_name
+        skip.mkdir()
+        (skip / "noise.md").write_text("# noise\n")
+        # Plant a control file in hooks/ so we can confirm normal walking.
+        hooks = plugin / "hooks"
+        hooks.mkdir()
+        (hooks / "real.sh").write_text("#!/bin/sh\necho real\n")
+
+        inv = PluginInventory.from_path(plugin)
+
+        # Real content walked.
+        assert inv.hooks_count == 1
+        # Skip content pruned from BOTH unknown and the warning channel
+        # (for .git/.venv/venv/__pycache__ at top level, we surface a
+        # warning so the user knows something was skipped).
+        unknown_paths = [u.path for u in inv.unknown]
+        assert not any(skip_name in p for p in unknown_paths)
+
+
+# ============================================================================
 # Adversarial
 # ============================================================================
 
