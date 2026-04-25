@@ -263,6 +263,31 @@ one real finding's severity in their own context.
   thorough security review would include additional methods and
   manual review.
 
+## Addendum (2026-04-25): SCA bug verification
+
+On 2026-04-22, PR #3 fixed a silent false-negative in Griffith's
+`--sca` invocation: `osv-scanner` skipped `.gitignore`'d subdirectory
+lockfiles unless `--no-ignore` was passed. The original argv omitted
+the flag.
+
+Because this audit was produced on 2026-04-20 (pre-fix), the
+**`0 CVEs` claim in the Dependencies section was reverified** against
+superpowers v5.0.7 using the fixed Griffith code on 2026-04-25:
+
+- Lockfile present at `tests/brainstorm-server/package-lock.json`
+  (subdirectory — exactly the shape that triggered the bug elsewhere)
+- Superpowers' root `.gitignore` does **not** exclude `tests/`
+- `osv-scanner` correctly scans the lockfile both pre- and post-`--no-ignore`
+  (63 dirs visited, 1 lockfile, 1 package, 0 vulnerabilities — identical
+  output between the two invocations)
+
+**Conclusion:** the bug did not affect this audit. The `0 CVEs` claim
+was accurate at the time of publication and remains accurate.
+
+(Generalized recheck of all published audits is tracked in
+`.claude/work/followups/published-audit-sca-recheck.md`; superpowers
+is the only published audit at this time.)
+
 ## Related
 
 - Griffith: https://github.com/GruntworkAI/gruntwork-griffith
