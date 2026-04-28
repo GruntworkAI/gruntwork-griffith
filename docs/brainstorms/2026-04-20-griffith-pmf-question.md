@@ -357,6 +357,87 @@ meaningfully, re-open the skills-first MVP option (Path 2). If it's
 plateaued at 1-2, the signal is "useful for me, maybe a few others,
 not a product" and Phase 2/3 should stay deferred.
 
+## Update 2026-04-28: audit corpus growing + positioning sharpens
+
+A week into the lightweight Path 4 cadence, two things have come into
+focus.
+
+**Audits accumulating into a real corpus.** Three published audits
+now live in `docs/audits/`:
+
+- `2026-04-20-superpowers.md` — single popular plugin, 1 critical
+  test-scoped finding, 20 info signals
+- `2026-04-27-trailofbits-skills-curated.md` — 28-plugin federated
+  marketplace, completely clean (4 info, 0 CVEs)
+- `2026-04-28-bmad-method.md` — 2 plugins / 39 skills / 1,044-file
+  repo, 0 actionable security findings + 19 dev-dep CVEs framed as
+  build-tooling-only (not end-user runtime risk)
+
+Combined audit count: ~33 plugins across 4 marketplaces. That's
+enough data to start drawing ecosystem-level observations:
+
+- Most plugins are clean. The signal-to-noise of the Claude Code
+  plugin ecosystem (at the slice we've sampled) is good.
+- The rare real findings are usually subtle. Superpowers' one
+  critical was a test-scoped shell-injection antipattern, not a
+  user-facing exploit. BMAD's CVEs were all in dev-dep build chains.
+- Federated marketplace handling works. BMAD surfaced a Griffith
+  bug (plugin-name resolution when `source: "./"`); fix tracked at
+  `.claude/work/followups/marketplace-plugin-name-resolution.md`.
+
+**Positioning sharpens: static analysis vs AI security theater.**
+The community-pressure context that surfaced during the superpowers
+audit (94% PR rejection rate, explicit "your review agent flagged
+this isn't a problem statement" policy) is the bigger story.
+Open-source maintainers are flooded with LLM-generated security
+"reviews" that hallucinate findings, fabricate CVE IDs, and demand
+attention. Maintainer trust in agent-sourced contributions is at a
+floor.
+
+Griffith's positioning as a deterministic, reproducible, source-cited
+static analyzer is **structurally distinct** from that slop wave —
+and that distinction is now the most compelling thing about the
+project, not a footnote. The audits already document this implicitly
+(citing rule names, line numbers, reproducible commands). Making it
+explicit in:
+
+- The Griffith README (a "How Griffith differs from AI security
+  review" section)
+- Every PR/issue Griffith findings produce (a slop-aware template
+  that names the problem upfront)
+- Public-facing posts (the framing should be the thesis, not buried
+  in the methodology section)
+
+This positioning shift is independent of the PMF outcome. Even if
+Griffith never grows past Michael's personal use, distinguishing
+deterministic tooling from review-agent output is a real public
+service. If Griffith does scale, this becomes the pitch.
+
+**Updated decision-table read:**
+
+| Signal | 2026-04-21 | 2026-04-28 |
+|---|---|---|
+| External upstream interest | 1 merged PR | 1 merged PR + 1 actionable issue queued (BMAD dev-dep CVEs) |
+| External awareness | 1 star | 1 star + audits referenced internally |
+| Aggregate audit corpus | 1 plugin | 33 plugins / 3 publishable reports |
+| Positioning clarity | "Plugin Observatory" | "Deterministic alternative to AI security theater" |
+
+**Posture for next 30 days:**
+
+- Continue Path 4: opportunistic audits when interesting plugins
+  surface, file respectful issues only when findings are real and
+  actionable.
+- File the BMAD dev-dep-CVE issue using the slop-aware PR template
+  (drafted at `.claude/work/drafts/2026-04-28-bmad-issue.md`).
+- Draft the public post (Tier C from the engagement-signal triage)
+  with the slop-distinction framing as the thesis. Substack canonical
+  + HN/Reddit distribution if/when ready.
+- Revisit this brainstorm at the 30-day mark (~2026-05-20). If
+  external engagement has compounded meaningfully — multiple
+  ecosystem people referencing Griffith, audits getting cited
+  externally, plugin maintainers reaching out — re-open Path 2
+  (skills-first MVP) seriously. If plateaued, hold.
+
 ## Sources
 
 - Current design doc: `docs/design.md` (Phases 1-3 + business model)

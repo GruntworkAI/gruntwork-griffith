@@ -180,6 +180,35 @@ The Claude Code plugin ecosystem lacks quality infrastructure that mature ecosys
 
 Griffith's Phase 1 + 1.5 address the static-analysis gap. Whether Griffith should grow into the full Observatory design (runtime tracking + public aggregation + business model) is an open product question tracked in [the PMF brainstorm](docs/brainstorms/2026-04-20-griffith-pmf-question.md).
 
+## How Griffith differs from AI security review
+
+Open-source maintainers are flooded with LLM-generated "security review" PRs and issues — review agents producing fluent-sounding prose with hallucinated findings, fabricated CVE IDs, and authoritative tone applied to invented problems. The maintainer cost is real: [one popular Claude Code plugin reports a 94% PR rejection rate](https://github.com/obra/superpowers/blob/main/AGENTS.md) and explicitly disqualifies "my review agent flagged this" as a contribution problem statement.
+
+Griffith is structurally different from that class of tooling:
+
+| Property | LLM security review | Griffith |
+|---|---|---|
+| Source of findings | Model inference over plugin source | Deterministic regex + AST rules + osv-scanner |
+| Reproducibility | Different output on each run | Same input → same output, every time |
+| Citable rule | Model "reasoning" (not auditable) | Open-source rule in `rules/security_patterns.yaml` or `src/griffith/analyzer/ast_rules.py` |
+| File:line evidence | Sometimes hallucinated, sometimes correct | Always the actual matching line |
+| CVE evidence | Sometimes fabricated IDs | osv-scanner Tier 2 with real GHSA / PYSEC IDs |
+| Maintainer verifiability | Must trust the model | Can re-run `griffith analyze <repo>` themselves |
+| Severity calibration | Often inflated for impact | Capability signals at `info`; only structural risk patterns escalate |
+
+A Griffith finding is something the maintainer can **verify themselves** by running the tool, looking at the rule, and checking the file:line. There is no model in the loop deciding what to flag — only deterministic pattern matching with explicit rules.
+
+When findings warrant upstream contact, Griffith-derived issues should:
+
+- Lead with the deterministic-tool framing
+- Cite the specific rule or CVE ID
+- Include the reproduction command
+- Acknowledge the slop-PR problem upfront (so the maintainer doesn't have to triage another suspected slop)
+
+This positioning isn't defensive marketing — it's a structural promise. If a Griffith finding turns out wrong, the rule that produced it is open, the input is reproducible, and the bug can be fixed at the rule layer (not by adjusting prompt templates).
+
+See [`docs/audits/`](docs/audits/) for published audits that follow this pattern.
+
 ## Roadmap
 
 - **Phase 1** (shipped): Static analyzer CLI — inventory, security, footprint, architecture.
