@@ -43,3 +43,6 @@ Thumbs.db
 
 # Project specific
 *.log
+
+# Private outreach drafts and strategic notes — never committed to public repo
+private/
