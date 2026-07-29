@@ -137,6 +137,13 @@ The JSON output is the contract for downstream tools (the LMF `/run-audit-plugin
 
 Per `src/griffith/schema.py`'s own promise: any change to the TypedDicts bumps `schema_version`. There is currently a one-time v0.1 carve-out for severity shifts on existing rule_ids — see the stability-guarantees section of the schema doc.
 
+## Gotchas
+
+| Issue | Symptom | Cause / fix |
+|-------|---------|-------------|
+| **osv-scanner skips subdirectories without `--no-ignore`** | Tier 2 SCA reports **0 vulnerabilities** on a plugin that demonstrably has CVEs. No error, no warning — a clean report. | osv-scanner 2.x does not recurse into subdirectories by default, and `-r` alone is not enough. Found 2026 against a real plugin with 7 known CVEs (4 High / 3 Medium) in dev lockfiles: Griffith reported 0 before the flag, all 7 after. Fixed in `7417dc6` (`osv_adapter.py`). **The failure mode is silence, so a clean `--sca` run is not by itself evidence of a clean plugin.** No regression test guards this yet — a fixture-based test asserting CVEs actually surface is still an open follow-up, so future osv-scanner CLI drift could reintroduce it undetected. |
+| **Green local test run is weaker than green CI** | Snapshot tests pass locally, fail in CI. | Of the three real-plugin fingerprint snapshots, `lastmilefirst-*` and `compound-engineering-*` **skip** locally when those plugins aren't cached under `~/.claude/plugins/cache/`. Only `security-traps-plugin` always runs. CI runs all three. Before trusting a rule change, either install those plugins locally or wait for CI. |
+
 ## Related Projects
 
 - **lastmilefirst** — provides Overwatch (session-start workspace alerter) and the `/run-audit-plugin` wrapper skill that consumes Griffith's JSON output.
